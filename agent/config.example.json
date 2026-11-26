@@ -1,0 +1,15 @@
+{
+  "router_url": "http://192.168.1.1",
+  "router_user": "admin",
+  "router_password": "YOUR_ROUTER_PASSWORD",
+  "api_url": "https://YOUR_VERCEL_APP.vercel.app",
+  "api_secret": "CHANGE_THIS_SECRET_TOKEN",
+  "api_mac": "",
+  "upstash_url": "",
+  "upstash_token": "",
+  "poll_seconds": 5,
+  "enable_ping": true,
+  "enable_nmap": false,
+  "telegram_bot_token": "",
+  "telegram_chat_id": ""
+}

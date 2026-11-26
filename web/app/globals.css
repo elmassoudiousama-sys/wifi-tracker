@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    font-size: 14px;
+    font-family: 'Cairo', -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+
+  body {
+    background-color: #ECEBF3;
+    color: #14121F;
+    margin: 0;
+    padding: 0;
+  }
+}
+
+.ltr-num {
+  direction: ltr;
+  display: inline-block;
+  unicode-bidi: isolate;
+}
+
+.bento-card {
+  border-radius: 28px;
+  padding: 28px;
+  border: none;
+  box-shadow: none;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.bento-card:hover {
+  transform: translateY(-2px);
+}
+
+.btn-outline {
+  border: 1.5px solid #14121F;
+  background: transparent;
+  color: #14121F;
+  transition: all 0.2s ease;
+}
+
+.btn-outline:hover {
+  background: #14121F;
+  color: #FFFFFF;
+}
+
+@keyframes livePulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.3);
+    opacity: 0.75;
+  }
+}
+
+.animate-live-dot {
+  animation: livePulse 2s infinite ease-in-out;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

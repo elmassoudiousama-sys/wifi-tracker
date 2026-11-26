@@ -1,0 +1,31 @@
+# Dependencies & build artifacts
+node_modules/
+.next/
+out/
+.vercel/
+*.tsbuildinfo
+
+# Local secrets & environment variables
+.env
+.env.local
+.env.*.local
+agent/config.json
+
+# Runtime state, logs & local databases
+web/.data/
+agent/devices.json
+agent/banned_identities.json
+agent/correlation_state.json
+agent/device_models.json
+agent/identity_profiles.json
+agent/discovered_devices.db
+agent/monitor.log
+agent/*.pid
+agent/__pycache__/
+*.pyc
+
+# Scratch & local helper scripts
+scratch/
+read.py
+.DS_Store
+Thumbs.db
