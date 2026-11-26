@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { neon } from "@neondatabase/serverless";
 
 export interface DeviceIdentityInfo {
   stableIds?: string[];
@@ -398,11 +399,48 @@ export function isAuthorizedAdmin(req: Request): boolean {
   return Boolean(pass && req.headers.get("x-admin-password") === pass);
 }
 
+function getDatabaseUrl(): string {
+  return (process.env.DATABASE_URL || process.env.POSTGRES_URL || "").trim();
+}
+
+let neonTableReady = false;
+
+async function getNeonSql() {
+  const dbUrl = getDatabaseUrl();
+  const sql = neon(dbUrl);
+  if (!neonTableReady) {
+    await sql`
+      CREATE TABLE IF NOT EXISTS monitor_state (
+        id TEXT PRIMARY KEY,
+        payload TEXT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `;
+    neonTableReady = true;
+  }
+  return sql;
+}
+
 function hasUpstash(): boolean {
   return Boolean(process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN);
 }
 
 export async function readState(): Promise<MonitorState> {
+  if (getDatabaseUrl()) {
+    try {
+      const sql = await getNeonSql();
+      const rows = (await sql`SELECT payload FROM monitor_state WHERE id = ${REDIS_KEY} LIMIT 1`) as Array<{
+        payload?: string;
+      }>;
+      const raw = rows?.[0]?.payload;
+      if (!raw) return { ...DEFAULT_STATE };
+      return { ...DEFAULT_STATE, ...JSON.parse(raw) };
+    } catch (err) {
+      console.error("[Neon readState error]", err);
+      return { ...DEFAULT_STATE };
+    }
+  }
+
   if (hasUpstash()) {
     const url = `${process.env.UPSTASH_REDIS_REST_URL}/get/${REDIS_KEY}`;
     const res = await fetch(url, {
@@ -430,6 +468,17 @@ export async function readState(): Promise<MonitorState> {
 
 export async function writeState(state: MonitorState): Promise<void> {
   const serialized = JSON.stringify(state);
+  if (getDatabaseUrl()) {
+    const sql = await getNeonSql();
+    await sql`
+      INSERT INTO monitor_state (id, payload, updated_at)
+      VALUES (${REDIS_KEY}, ${serialized}, NOW())
+      ON CONFLICT (id)
+      DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()
+    `;
+    return;
+  }
+
   if (hasUpstash()) {
     const url = `${process.env.UPSTASH_REDIS_REST_URL}/set/${REDIS_KEY}`;
     await fetch(url, {

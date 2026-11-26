@@ -11,13 +11,11 @@
 1. ارفع المشروع إلى GitHub ثم استورده في **Vercel** وحدد:
    - **Root Directory**: `web`
    - **Framework Preset**: `Next.js`
-2. في إعدادات المشروع على Vercel ← **Storage / Marketplace** أضف **Upstash Redis** (مجاني) ليضيف تلقائياً:
-   - `UPSTASH_REDIS_REST_URL`
-   - `UPSTASH_REDIS_REST_TOKEN`
-3. في **Settings → Environment Variables** أضف:
+2. في إعدادات المشروع على Vercel ← **Settings → Environment Variables** أضف:
+   - `DATABASE_URL`: رابط قاعدة بيانات **Neon PostgreSQL** (أو `UPSTASH_REDIS_REST_URL` و `UPSTASH_REDIS_REST_TOKEN`).
    - `ADMIN_PASSWORD`: كلمة السر للدخول إلى لوحة التحكم.
    - `AGENT_SECRET`: رمز سري طويل مشترك بين الهاتف والسيرفر (نفس `api_secret` في `agent/config.json`).
-4. اضغط **Deploy** وانسخ رابط الموقع (مثلاً `https://wifi-tracker.vercel.app`).
+3. اضغط **Deploy** (يتم إنشاء جدول `monitor_state` في Neon تلقائياً عند أول تشغيل).
 
 ---
 
