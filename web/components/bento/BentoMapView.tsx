@@ -4,7 +4,7 @@ import React, { useState, useMemo } from "react";
 import { useDashboard } from "@/features/dashboard/DashboardContext";
 import { MapCanvas, MapTelemetry } from "@/components/map-editor/MapCanvas";
 import {
-  buildInitialNodes,
+  buildAutoTopologyNodes,
   clearAutoLayoutOverrides,
   nodesToSwitches,
 } from "@/lib/map-data";
@@ -17,6 +17,7 @@ export function BentoMapView({ onSwitchToEdit }: BentoMapViewProps) {
   const {
     state,
     cableDevices,
+    unknownDevices,
     wifiClients,
     offlineCable,
     portRates,
@@ -27,28 +28,33 @@ export function BentoMapView({ onSwitchToEdit }: BentoMapViewProps) {
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
   const [layoutTick, setLayoutTick] = useState<number>(0);
 
-  // 1. Live Telemetry from ZTE F680 & Agent
+  const routerModelRaw = state?.routerHealth?.model?.trim() || "";
+  const routerDisplayName = routerModelRaw
+    ? routerModelRaw.toUpperCase().startsWith("ZTE")
+      ? routerModelRaw
+      : `ZTE ${routerModelRaw}`
+    : "ZTE Router";
+  const routerIp = state?.routerHealth?.ip?.trim() || "192.168.1.1";
+
   const internetPing = state?.diagnostics?.internetPing ?? null;
   const netStatus = state?.diagnostics?.status ?? "ممتاز";
 
   const lanRates = useMemo(() => {
-    const map: Record<string, { rx: number; tx: number; total: number }> = {
-      LAN1: { rx: 0, tx: 0, total: 0 },
-      LAN2: { rx: 0, tx: 0, total: 0 },
-      LAN3: { rx: 0, tx: 0, total: 0 },
-      LAN4: { rx: 0, tx: 0, total: 0 },
-    };
+    const map: Record<string, { rx: number; tx: number; total: number }> = {};
+    (state?.lanPorts || []).forEach((lp) => {
+      if (lp.port) map[lp.port.toUpperCase()] = { rx: 0, tx: 0, total: 0 };
+    });
     (portRates || []).forEach((p) => {
-      if (map[p.port]) {
-        map[p.port] = {
-          rx: Math.round((p.rxMbps || 0) * 100) / 100,
-          tx: Math.round((p.txMbps || 0) * 100) / 100,
-          total: Math.round((p.totalMbps || 0) * 100) / 100,
-        };
-      }
+      const key = (p.port || "").toUpperCase();
+      if (!key) return;
+      map[key] = {
+        rx: Math.round((p.rxMbps || 0) * 100) / 100,
+        tx: Math.round((p.txMbps || 0) * 100) / 100,
+        total: Math.round((p.totalMbps || 0) * 100) / 100,
+      };
     });
     return map;
-  }, [portRates]);
+  }, [portRates, state?.lanPorts]);
 
   const totalDl = useMemo(() => {
     return Object.values(lanRates)
@@ -64,18 +70,12 @@ export function BentoMapView({ onSwitchToEdit }: BentoMapViewProps) {
       ip: w.ip,
       mac: w.mac,
       vendor: w.vendor,
+      band: w.band,
+      ssidName: w.ssidName,
+      category: w.category,
+      blocked: w.blocked,
     }));
   }, [wifiClients]);
-
-  const lan3Device = useMemo(() => {
-    const d = cableDevices.find((c) => c.port === "LAN3" && c.online);
-    return d ? { name: d.name, type: d.category || "router" } : undefined;
-  }, [cableDevices]);
-
-  const lan4Device = useMemo(() => {
-    const d = cableDevices.find((c) => c.port === "LAN4" && c.online);
-    return d ? { name: d.name, type: d.category || "camera" } : undefined;
-  }, [cableDevices]);
 
   const disconnectedDevices = useMemo(() => {
     return offlineCable.map((d) => ({
@@ -87,11 +87,11 @@ export function BentoMapView({ onSwitchToEdit }: BentoMapViewProps) {
 
   const telemetry: MapTelemetry = useMemo(
     () => ({
+      routerName: routerDisplayName,
+      routerIp,
       internetPing,
       totalDl,
       lanRates,
-      lan3Device,
-      lan4Device,
       wifiCount: wifiClients.length,
       wifiClients: formattedWifiClients,
       disconnectedDevices,
@@ -107,23 +107,52 @@ export function BentoMapView({ onSwitchToEdit }: BentoMapViewProps) {
       ),
     }),
     [
+      routerDisplayName,
+      routerIp,
       internetPing,
       state?.updatedAt,
       totalDl,
       lanRates,
-      lan3Device,
-      lan4Device,
       wifiClients.length,
       formattedWifiClients,
       disconnectedDevices,
     ]
   );
 
-  // Build nodes directly from saved user edits + live telemetry + automatic cable routing
+  // Build topology dynamically from ALL live router data + user edits
   const nodes = useMemo(
-    () => buildInitialNodes(cableDevices, formattedWifiClients, offlineCable, state?.canvas),
+    () =>
+      buildAutoTopologyNodes({
+        routerModel: state?.routerHealth?.model,
+        routerIp: state?.routerHealth?.ip,
+        cableDevices,
+        unknownDevices,
+        wifiClients: formattedWifiClients,
+        offlineCable,
+        lanPorts: state?.lanPorts,
+        lanPortRates: portRates,
+        correlationInsights: state?.correlationInsights,
+        hasActiveWifi: Boolean(
+          formattedWifiClients.length > 0 || (state?.wlanSsids || []).some((s) => s.enable)
+        ),
+        serverCanvas: state?.canvas,
+        serverTopology: state?.topology,
+      }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [cableDevices, formattedWifiClients, offlineCable, state?.canvas, layoutTick]
+    [
+      state?.routerHealth,
+      state?.lanPorts,
+      state?.correlationInsights,
+      state?.wlanSsids,
+      state?.canvas,
+      state?.topology,
+      cableDevices,
+      unknownDevices,
+      formattedWifiClients,
+      offlineCable,
+      portRates,
+      layoutTick,
+    ]
   );
 
   const handleAutoArrange = () => {
@@ -138,9 +167,10 @@ export function BentoMapView({ onSwitchToEdit }: BentoMapViewProps) {
     setSelectedDeviceId(deviceId);
     const node = nodes.find((n) => n.id === deviceId);
     if (node?.mac && setInspectItem) {
-      const liveDev = cableDevices.find(
-        (d) => d.mac.toUpperCase() === node.mac?.toUpperCase()
-      );
+      const liveDev =
+        cableDevices.find((d) => d.mac.toUpperCase() === node.mac?.toUpperCase()) ||
+        unknownDevices.find((d) => d.mac.toUpperCase() === node.mac?.toUpperCase()) ||
+        wifiClients.find((d) => d.mac.toUpperCase() === node.mac?.toUpperCase());
       if (liveDev) {
         setInspectItem(liveDev as unknown as Record<string, unknown>);
       }
@@ -158,7 +188,7 @@ export function BentoMapView({ onSwitchToEdit }: BentoMapViewProps) {
               خريطة الشبكة التفاعلية الحية
             </h3>
             <span className="text-[12px] font-[700] px-2.5 py-0.5 rounded-[999px] bg-[#EFEBFF] text-[#5B3DF5]">
-              مباشر من ZTE F680
+              مباشر من {routerDisplayName}
             </span>
           </div>
 
@@ -226,7 +256,6 @@ export function BentoMapView({ onSwitchToEdit }: BentoMapViewProps) {
           </div>
         </div>
 
-        {/* Live Synchronized Map Canvas (reflects all user edits from MapEditor) */}
         <MapCanvas
           nodes={nodes}
           tool="pan"

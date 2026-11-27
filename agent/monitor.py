@@ -1147,21 +1147,23 @@ def run_once(
         for dl in dhcp_leases_raw
         if dl.get("IPAddr")
     ]
-    router_health = None
-    if optical_info or system_status:
-        router_health = {
-            "model": system_status.get("ModelName", "F680"),
-            "softwareVer": system_status.get("SoftwareVer", ""),
-            "hardwareVer": system_status.get("HardwareVer", ""),
-            "cpuUsage": int(system_status.get("CpuUsage1", 0) or 0),
-            "memUsage": int(system_status.get("MemUsage", 0) or 0),
-            "uptimeSec": int(system_status.get("PowerOnTime", 0) or 0),
-            "rxPowerDbm": optical_info.get("RxPower", ""),
-            "txPowerDbm": optical_info.get("TxPower", ""),
-            "tempC": optical_info.get("Temp", ""),
-            "los": optical_info.get("LosInfo", "0") == "1",
-            "regStatus": optical_info.get("RegStatus", ""),
-        }
+    router_url = str(cfg.get("router_url") or "http://192.168.1.1")
+    m_ip = re.search(r"https?://([^/:]+)", router_url)
+    router_ip = m_ip.group(1) if m_ip else "192.168.1.1"
+    router_health = {
+        "model": system_status.get("ModelName") or "ZTE",
+        "ip": router_ip,
+        "softwareVer": system_status.get("SoftwareVer", ""),
+        "hardwareVer": system_status.get("HardwareVer", ""),
+        "cpuUsage": int(system_status.get("CpuUsage1", 0) or 0) if system_status else 0,
+        "memUsage": int(system_status.get("MemUsage", 0) or 0) if system_status else 0,
+        "uptimeSec": int(system_status.get("PowerOnTime", 0) or 0) if system_status else 0,
+        "rxPowerDbm": optical_info.get("RxPower", "") if optical_info else "",
+        "txPowerDbm": optical_info.get("TxPower", "") if optical_info else "",
+        "tempC": optical_info.get("Temp", "") if optical_info else "",
+        "los": (optical_info.get("LosInfo", "0") == "1") if optical_info else False,
+        "regStatus": optical_info.get("RegStatus", "") if optical_info else "",
+    }
     port_mirror = {
         "enable": port_mirror_raw.get("MirrorEnable", "0") == "1",
         "src": port_mirror_raw.get("MirrorSrc", "IGD.WANALL"),

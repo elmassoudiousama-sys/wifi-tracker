@@ -1,3 +1,5 @@
+import type { CorrelationInsight, LanPortRate, LanPortStat } from "@/lib/store";
+
 export type MapNodeType = "wan" | "router" | "hub" | "switch" | "device";
 
 export interface MapNode {
@@ -7,7 +9,7 @@ export interface MapNode {
   subType?: "router" | "phone" | "pc" | "camera" | "ap" | "custom";
   x: number;
   y: number;
-  parentId?: string; // id of parent node (switch, hub, router)
+  parentId?: string;
   portIndex?: number; // 1-based port index on switch
   // Telemetry & device properties
   ip?: string;
@@ -15,10 +17,13 @@ export interface MapNode {
   cableQuality?: number;
   blocked?: boolean;
   vendor?: string;
-  ports?: number; // for switches (e.g. 5, 8, 16)
-  uplinkHub?: "LAN1" | "LAN2" | "LAN3" | "LAN4" | "WIFI";
+  ports?: number; // for switches (e.g. 5, 8, 16, 24)
+  uplinkHub?: string;
   uplinkColor?: string;
   selected?: boolean;
+  online?: boolean;
+  band?: string;
+  ssidName?: string;
 }
 
 export interface MapCable {
@@ -30,6 +35,58 @@ export interface MapCable {
   dashed?: boolean;
   label?: string;
   fromPortIndex?: number;
+}
+
+export interface AutoTopologyInput {
+  routerModel?: string;
+  routerIp?: string;
+  cableDevices?: any[];
+  unknownDevices?: any[];
+  wifiClients?: any[];
+  offlineCable?: any[];
+  lanPorts?: LanPortStat[];
+  lanPortRates?: LanPortRate[];
+  correlationInsights?: CorrelationInsight[];
+  hasActiveWifi?: boolean;
+  serverCanvas?: {
+    positions?: Record<string, { x: number; y: number }>;
+    switches?: any[];
+    edges?: any[];
+  } | null;
+  serverTopology?: Record<string, { portOverride?: string; parentMac?: string }> | null;
+}
+
+const SCHEMA_VERSION_KEY = "network-map-schema-version";
+const SCHEMA_VERSION = "v2-auto";
+const ROUTER_SIG_KEY = "network-map-router-sig";
+const ROUTER_MACS_KEY = "network-map-router-macs";
+
+const HUB_COLORS: Record<string, { color: string; textColor: string }> = {
+  LAN1: { color: "#5B3DF5", textColor: "#FFFFFF" },
+  LAN2: { color: "#FF7A45", textColor: "#14121F" },
+  LAN3: { color: "#D7F25C", textColor: "#14121F" },
+  LAN4: { color: "#14121F", textColor: "#FFFFFF" },
+  LAN5: { color: "#0EA5E9", textColor: "#FFFFFF" },
+  LAN6: { color: "#10B981", textColor: "#FFFFFF" },
+  WIFI: { color: "#FFFFFF", textColor: "#5B3DF5" },
+  OFFLINE: { color: "#FFFFFF", textColor: "#6B6880" },
+};
+
+export function getPortColor(portName: string): { color: string; textColor: string } {
+  const upper = portName.toUpperCase();
+  if (HUB_COLORS[upper]) return HUB_COLORS[upper];
+  const palette = [
+    { color: "#5B3DF5", textColor: "#FFFFFF" },
+    { color: "#FF7A45", textColor: "#14121F" },
+    { color: "#D7F25C", textColor: "#14121F" },
+    { color: "#14121F", textColor: "#FFFFFF" },
+    { color: "#0EA5E9", textColor: "#FFFFFF" },
+  ];
+  const num = Number.parseInt(upper.replace(/[^0-9]/g, ""), 10);
+  if (Number.isFinite(num) && num >= 1) {
+    return palette[(num - 1) % palette.length];
+  }
+  return palette[0];
 }
 
 export function loadSavedPositions(): Record<string, { x: number; y: number }> {
@@ -71,7 +128,6 @@ export function savePortAssignment(mac: string, portIndex?: number) {
     if (portIndex === undefined || portIndex === null || portIndex < 0) {
       delete current[upper];
     } else {
-      // 0 = explicitly disconnected by user; >= 1 = assigned port index
       current[upper] = portIndex;
     }
     localStorage.setItem("network-map-port-assignments", JSON.stringify(current));
@@ -93,6 +149,19 @@ export function clearAutoLayoutOverrides() {
     if (changed) {
       localStorage.setItem("network-map-port-assignments", JSON.stringify(ports));
     }
+  } catch {}
+}
+
+export function clearAllMapOverrides() {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.removeItem("network-map-positions");
+    localStorage.removeItem("network-map-port-assignments");
+    localStorage.removeItem("network-map-device-parents");
+    localStorage.removeItem("network-map-custom-nodes");
+    localStorage.removeItem("network-map-deleted-nodes");
+    localStorage.removeItem("network-map-switch-meta");
+    localStorage.removeItem("network-map-layout");
   } catch {}
 }
 
@@ -183,7 +252,7 @@ export function clearDeletedNodes() {
 export interface SwitchMetaOverride {
   name?: string;
   ports?: number;
-  uplinkHub?: "LAN1" | "LAN2" | "LAN3" | "LAN4" | "WIFI";
+  uplinkHub?: string;
   uplinkColor?: string;
 }
 
@@ -213,7 +282,7 @@ export interface MapDevice {
   x: number;
   y: number;
   selected?: boolean;
-  cableQuality?: number; // e.g. 58 for 58%
+  cableQuality?: number;
   customIcon?: string;
   portIndex?: number;
   ip?: string;
@@ -228,10 +297,10 @@ export interface MapSwitch {
   name: string;
   x: number;
   y: number;
-  ports: number; // 5, 8, 16, 24
+  ports: number;
   parentId?: string;
   portIndex?: number;
-  uplinkHub: "LAN1" | "LAN2" | "LAN3" | "LAN4" | "WIFI" | string;
+  uplinkHub: string;
   uplinkColor: string;
   selected?: boolean;
   devices: MapDevice[];
@@ -239,7 +308,7 @@ export interface MapSwitch {
 }
 
 export interface HubNode {
-  id: "LAN1" | "LAN2" | "LAN3" | "LAN4" | "WIFI";
+  id: string;
   name: string;
   x: number;
   y: number;
@@ -273,576 +342,597 @@ export const INITIAL_PALETTE_ITEMS: PaletteItem[] = [
   { id: "cam-dvr", name: "كاميرا / DVR", sub: "مراقبة", type: "camera", iconType: "camera" },
 ];
 
-export const INITIAL_HUBS: HubNode[] = [
-  {
-    id: "LAN1",
-    name: "LAN1",
-    x: 335,
-    y: 130,
-    width: 124,
-    height: 52,
-    color: "#5B3DF5",
-    textColor: "#FFFFFF",
-    deviceCount: 10,
-    mbps: 14.14,
-    mbpsLabel: "14.14 Mbps",
-  },
-  {
-    id: "LAN2",
-    name: "LAN2",
-    x: 335,
-    y: 425,
-    width: 124,
-    height: 52,
-    color: "#FF7A45",
-    textColor: "#14121F",
-    deviceCount: 9,
-    mbps: 15.38,
-    mbpsLabel: "15.38 Mbps",
-  },
-  {
-    id: "WIFI",
-    name: "الويفي",
-    x: 790,
-    y: 95,
-    width: 124,
-    height: 52,
-    color: "#FFFFFF",
-    textColor: "#5B3DF5",
-    stroke: "#5B3DF5",
-    deviceCount: 5,
-    mbps: 0,
-    mbpsLabel: "Wi-Fi 5 أجهزة",
-  },
-  {
-    id: "LAN3",
-    name: "LAN3",
-    x: 805,
-    y: 285,
-    width: 124,
-    height: 52,
-    color: "#D7F25C",
-    textColor: "#14121F",
-    deviceCount: 1,
-    mbps: 9.35,
-    mbpsLabel: "9.35 Mbps",
-  },
-  {
-    id: "LAN4",
-    name: "LAN4",
-    x: 805,
-    y: 455,
-    width: 124,
-    height: 52,
-    color: "#14121F",
-    textColor: "#FFFFFF",
-    deviceCount: 1,
-    mbps: 0,
-    mbpsLabel: "0 Mbps",
-    lineDashed: true,
-  },
-];
+export const INITIAL_HUBS: HubNode[] = [];
+export const INITIAL_SWITCHES: MapSwitch[] = [];
 
-export const INITIAL_SWITCHES: MapSwitch[] = [
-  {
-    id: "switch-salon",
-    name: "Switch Salon",
-    x: 190,
-    y: 130,
-    ports: 8,
-    uplinkHub: "LAN1",
-    uplinkColor: "#5B3DF5",
-    selected: true,
-    devices: [
-      { id: "dev-3azkri", name: "3azkri", type: "router", x: 45, y: 258, portIndex: 1 },
-      { id: "dev-abdelmnan", name: "ABDELMNAN", type: "router", x: 115, y: 258, selected: true, cableQuality: 58, portIndex: 2 },
-      { id: "dev-galaxy", name: "Galaxy-A07", type: "phone", x: 185, y: 258, portIndex: 3 },
-      { id: "dev-tarik", name: "A53-de-tarik", type: "phone", x: 255, y: 258, portIndex: 4 },
-    ],
-    moreCount: 6,
-  },
-  {
-    id: "switch-bureau",
-    name: "Switch Bureau",
-    x: 190,
-    y: 425,
-    ports: 8,
-    uplinkHub: "LAN2",
-    uplinkColor: "#FF7A45",
-    selected: false,
-    devices: [
-      { id: "dev-biltran1", name: "BILTRAN 1", type: "router", x: 150, y: 548, portIndex: 1 },
-    ],
-    moreCount: 8,
-  },
-];
-
-export function buildSwitchesFromDevices(devices: any[]): MapSwitch[] {
-  const lan1 = (devices || []).filter((d) => d.port === "LAN1" && d.online);
-  const lan2 = (devices || []).filter((d) => d.port === "LAN2" && d.online);
-
-  const sw1X = 180;
-  const sw1Y = 130;
-  const sw2X = 180;
-  const sw2Y = 415;
-
-  // Clean, non-intersecting layout aligned symmetrically under each switch
-  const mapDevs1: MapDevice[] = lan1.map((d, i) => {
-    const isRow0 = i < 6;
-    const col = isRow0 ? i : i - 6;
-    const rowX = isRow0 ? sw1X - 110 + col * 44 : sw1X - 88 + col * 44;
-    const rowY = isRow0 ? sw1Y + 95 : sw1Y + 165;
-
-    return {
-      id: "dev-" + (d.mac ? d.mac.replace(/:/g, "").toLowerCase() : `lan1-${i}`),
-      name: d.name,
-      type: (d.category as any) || "router",
-      x: rowX,
-      y: rowY,
-      selected: i === 1,
-      cableQuality: d.cableHealth?.score ?? 100,
-      portIndex: i + 1,
-      ip: d.ip,
-      mac: d.mac,
-      blocked: d.blocked,
-      vendor: d.vendor,
-    };
-  });
-
-  const mapDevs2: MapDevice[] = lan2.map((d, i) => {
-    const isRow0 = i < 5;
-    const col = isRow0 ? i : i - 5;
-    const rowX = isRow0 ? sw2X - 92 + col * 46 : sw2X - 69 + col * 46;
-    const rowY = isRow0 ? sw2Y + 95 : sw2Y + 155;
-
-    return {
-      id: "dev-" + (d.mac ? d.mac.replace(/:/g, "").toLowerCase() : `lan2-${i}`),
-      name: d.name,
-      type: (d.category as any) || "router",
-      x: rowX,
-      y: rowY,
-      selected: false,
-      cableQuality: d.cableHealth?.score ?? 100,
-      portIndex: i + 1,
-      ip: d.ip,
-      mac: d.mac,
-      blocked: d.blocked,
-      vendor: d.vendor,
-    };
-  });
-
-  return [
-    {
-      id: "switch-salon",
-      name: "سويتش الصالون (LAN1)",
-      x: sw1X,
-      y: sw1Y,
-      ports: Math.max(8, lan1.length + 1 <= 8 ? 8 : 16),
-      uplinkHub: "LAN1",
-      uplinkColor: "#5B3DF5",
-      selected: true,
-      devices: mapDevs1,
-    },
-    {
-      id: "switch-bureau",
-      name: "سويتش المكتب (LAN2)",
-      x: sw2X,
-      y: sw2Y,
-      ports: Math.max(8, lan2.length + 1 <= 8 ? 8 : 16),
-      uplinkHub: "LAN2",
-      uplinkColor: "#FF7A45",
-      selected: false,
-      devices: mapDevs2,
-    },
-  ];
+function normPortName(port?: string): string {
+  const clean = (port || "").trim().toUpperCase();
+  const match = clean.match(/^LAN\s*(\d+)/);
+  if (match) return `LAN${match[1]}`;
+  return clean;
 }
 
-export function buildInitialNodes(
-  cableDevices: any[] = [],
-  wifiClients: any[] = [],
-  offlineCable: any[] = [],
-  serverCanvas?: { positions?: Record<string, { x: number; y: number }> }
-): MapNode[] {
+function comparePortNames(a: string, b: string): number {
+  const na = Number.parseInt(a.replace(/[^0-9]/g, ""), 10);
+  const nb = Number.parseInt(b.replace(/[^0-9]/g, ""), 10);
+  if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
+  return a.localeCompare(b);
+}
+
+function resolveDisplayName(d: any, fallbackPrefix = "جهاز"): string {
+  const candidates = [d.name, d.friendlyName, d.hostname];
+  for (const c of candidates) {
+    const val = typeof c === "string" ? c.trim() : "";
+    if (val && val !== "Unknown" && val !== "Wi-Fi Device" && val !== "unknown") {
+      return val;
+    }
+  }
+  if (d.vendor && typeof d.vendor === "string" && !d.vendor.startsWith("Randomized")) {
+    return d.vendor.split("(")[0].trim() || d.ip || fallbackPrefix;
+  }
+  if (d.ip) return d.ip;
+  if (d.mac) return `${fallbackPrefix} ${String(d.mac).slice(-5)}`;
+  return fallbackPrefix;
+}
+
+function ensureRouterScope(routerSignature: string, activeMacs: string[]) {
+  if (typeof window === "undefined") return;
+  try {
+    const curVer = localStorage.getItem(SCHEMA_VERSION_KEY);
+    if (curVer !== SCHEMA_VERSION) {
+      clearAllMapOverrides();
+      localStorage.setItem(SCHEMA_VERSION_KEY, SCHEMA_VERSION);
+      localStorage.setItem(ROUTER_SIG_KEY, routerSignature);
+      localStorage.setItem(ROUTER_MACS_KEY, JSON.stringify(activeMacs));
+      return;
+    }
+
+    if (activeMacs.length === 0) return;
+
+    const prevSig = localStorage.getItem(ROUTER_SIG_KEY) || "";
+    let prevMacs: string[] = [];
+    try {
+      prevMacs = JSON.parse(localStorage.getItem(ROUTER_MACS_KEY) || "[]");
+    } catch {}
+
+    let routerChanged = false;
+    if (prevSig && prevSig !== routerSignature) {
+      routerChanged = true;
+    } else if (prevMacs.length >= 2 && activeMacs.length >= 2) {
+      const prevSet = new Set(prevMacs);
+      const overlap = activeMacs.filter((m) => prevSet.has(m)).length;
+      const ratio = overlap / Math.max(prevMacs.length, activeMacs.length);
+      if (ratio < 0.2) {
+        routerChanged = true;
+      }
+    }
+
+    if (routerChanged) {
+      clearAllMapOverrides();
+    }
+
+    localStorage.setItem(ROUTER_SIG_KEY, routerSignature);
+    localStorage.setItem(ROUTER_MACS_KEY, JSON.stringify(activeMacs));
+  } catch {}
+}
+
+function chooseSwitchPortSize(neededPorts: number): number {
+  if (neededPorts <= 5) return 5;
+  if (neededPorts <= 8) return 8;
+  if (neededPorts <= 16) return 16;
+  return 24;
+}
+
+function normalizeServerTopology(
+  serverTopology?: Record<string, { portOverride?: string; parentMac?: string }> | null
+) {
+  const byMac = new Map<string, { portOverride?: string; parentMac?: string }>();
+  if (!serverTopology) return byMac;
+  Object.entries(serverTopology).forEach(([k, v]) => {
+    if (v) byMac.set(k.toUpperCase(), v);
+  });
+  return byMac;
+}
+
+/**
+ * 100% data-driven automatic network topology & layout generator.
+ * Builds the entire graph dynamically from ANY ZTE router's discovered telemetry
+ * without hardcoded device names or house switch names.
+ */
+export function buildAutoTopologyNodes(input: AutoTopologyInput): MapNode[] {
+  const rawModel = (input.routerModel || "").trim();
+  const routerName = rawModel
+    ? rawModel.toUpperCase().startsWith("ZTE")
+      ? rawModel
+      : `ZTE ${rawModel}`
+    : "ZTE Router";
+  const routerIp = (input.routerIp || "").trim() || "192.168.1.1";
+
+  // 1. Merge Known + Unknown Live Devices cleanly by MAC
+  const wiredMap = new Map<string, any>();
+  const offlineMap = new Map<string, any>();
+  const wifiMap = new Map<string, any>();
+
+  (input.cableDevices || []).forEach((d, idx) => {
+    const mac = (d.mac || `CABLE-${idx}`).toUpperCase();
+    if (d.online) {
+      wiredMap.set(mac, d);
+    } else {
+      offlineMap.set(mac, d);
+    }
+  });
+
+  (input.wifiClients || []).forEach((w, idx) => {
+    const mac = (w.mac || `WIFI-${idx}`).toUpperCase();
+    wifiMap.set(mac, w);
+  });
+
+  (input.unknownDevices || []).forEach((u, idx) => {
+    const mac = (u.mac || `UNK-${idx}`).toUpperCase();
+    if (wiredMap.has(mac) || wifiMap.has(mac) || offlineMap.has(mac)) return;
+    if ((u.medium || "").toUpperCase() === "WLAN" || String(u.port || "").includes("WIFI")) {
+      wifiMap.set(mac, u);
+    } else {
+      wiredMap.set(mac, { ...u, online: true });
+    }
+  });
+
+  const wiredOnline = Array.from(wiredMap.values());
+  const wifiAll = Array.from(wifiMap.values());
+  const offlineAll = Array.from(offlineMap.values());
+
+  const activeMacs = [
+    ...wiredOnline.map((d) => (d.mac || "").toUpperCase()),
+    ...wifiAll.map((w) => (w.mac || "").toUpperCase()),
+  ].filter(Boolean);
+
+  ensureRouterScope(`${routerName}|${routerIp}`, activeMacs);
+
   const localSaved = loadSavedPositions();
   const saved: Record<string, { x: number; y: number }> = {
-    ...(serverCanvas?.positions || {}),
+    ...(input.serverCanvas?.positions || {}),
     ...localSaved,
   };
+  const portAssignments = loadPortAssignments();
+  const savedParents = loadDeviceParents();
+  const serverTopo = normalizeServerTopology(input.serverTopology);
+  const customNodes = loadCustomNodes();
+  const deletedSet = new Set(loadDeletedNodeIds());
+  const switchMeta = loadSwitchMeta();
 
-  const getNodePos = (id: string, defaultX: number, defaultY: number) => {
-    if (saved[id] && typeof saved[id].x === "number" && typeof saved[id].y === "number") {
-      return { x: saved[id].x, y: saved[id].y };
+  // 2. Discover real physical LAN ports present on this router
+  const lanPortSet = new Set<string>();
+  (input.lanPorts || []).forEach((lp) => {
+    const p = normPortName(lp.port);
+    if (p.startsWith("LAN")) lanPortSet.add(p);
+  });
+  wiredOnline.forEach((d) => {
+    const p = normPortName(d.port);
+    if (p.startsWith("LAN")) lanPortSet.add(p);
+  });
+  (input.lanPortRates || []).forEach((r) => {
+    const p = normPortName(r.port);
+    if (p.startsWith("LAN")) lanPortSet.add(p);
+  });
+  // Fallback: if wired devices exist with unknown port, map them to LAN1
+  wiredOnline.forEach((d) => {
+    const p = normPortName(d.port);
+    if (!p.startsWith("LAN")) {
+      d._resolvedPort = "LAN1";
+      lanPortSet.add("LAN1");
+    } else {
+      d._resolvedPort = p;
     }
-    return { x: defaultX, y: defaultY };
-  };
+  });
 
-  const wanPos = getNodePos("node-wan", 550, 32);
-  const routerPos = getNodePos("node-router", 550, 265);
-  const lan1Pos = getNodePos("hub-lan1", 355, 105);
-  const lan2Pos = getNodePos("hub-lan2", 355, 435);
-  const wifiPos = getNodePos("hub-wifi", 785, 70);
-  const lan3Pos = getNodePos("hub-lan3", 785, 355);
-  const lan4Pos = getNodePos("hub-lan4", 785, 505);
-  const sw1Pos = getNodePos("switch-salon", 190, 105);
-  const sw2Pos = getNodePos("switch-bureau", 190, 435);
+  const sortedLanPorts = Array.from(lanPortSet).sort(comparePortNames);
 
-  const sw1SubPos = getNodePos("switch-lan1-sub", sw1Pos.x - 275, sw1Pos.y);
-  const sw1CascadePos = getNodePos("switch-lan1-cascade", sw1SubPos.x, sw1SubPos.y + 195);
+  // 3. Build device ID lookup & correlation tomography rules
+  const devIdByMac = new Map<string, string>();
+  wiredOnline.forEach((d, i) => {
+    const mac = (d.mac || "").toUpperCase();
+    const id = "dev-" + (mac ? mac.replace(/:/g, "").toLowerCase() : `lan-${i}`);
+    if (mac) devIdByMac.set(mac, id);
+    d._nodeId = id;
+  });
+  wifiAll.forEach((w, i) => {
+    const mac = (w.mac || "").toUpperCase();
+    const id = "dev-wifi-" + (mac ? mac.replace(/:/g, "").toLowerCase() : `${i}`);
+    if (mac) devIdByMac.set(mac, id);
+    w._nodeId = id;
+  });
 
-  const nodes: MapNode[] = [
-    {
-      id: "node-wan",
-      name: "الإنترنت",
-      type: "wan",
-      x: wanPos.x,
-      y: wanPos.y,
-    },
-    {
-      id: "node-router",
-      name: "ZTE F680",
-      type: "router",
-      x: routerPos.x,
-      y: routerPos.y,
-      parentId: "node-wan",
-      ip: "192.168.1.1",
-    },
-    {
-      id: "hub-lan1",
-      name: "LAN1",
+  const apChildByMac = new Map<string, string>();
+  const switchGroupEdgesByPort = new Map<string, Array<[string, string]>>();
+
+  (input.correlationInsights || []).forEach((ins) => {
+    if ((ins.confidence ?? 0) < 60) return;
+    const srcMac = (ins.sourceMac || "").toUpperCase();
+    const tgtMac = (ins.targetMac || "").toUpperCase();
+    if (!srcMac || !tgtMac) return;
+    if (ins.type === "ap_child") {
+      if (devIdByMac.has(srcMac)) {
+        apChildByMac.set(tgtMac, devIdByMac.get(srcMac)!);
+      }
+    } else if (ins.type === "switch_group") {
+      const p = normPortName(ins.port || "");
+      if (p.startsWith("LAN")) {
+        if (!switchGroupEdgesByPort.has(p)) switchGroupEdgesByPort.set(p, []);
+        switchGroupEdgesByPort.get(p)!.push([srcMac, tgtMac]);
+      }
+    }
+  });
+
+  // Helper: Connected components for switch_group insights on a given port
+  function getCorrelationComponents(portName: string, macsOnPort: string[]): string[][] {
+    const edges = switchGroupEdgesByPort.get(portName) || [];
+    if (edges.length === 0) return [];
+    const allowed = new Set(macsOnPort);
+    const adj = new Map<string, Set<string>>();
+    edges.forEach(([a, b]) => {
+      if (!allowed.has(a) || !allowed.has(b)) return;
+      if (!adj.has(a)) adj.set(a, new Set());
+      if (!adj.has(b)) adj.set(b, new Set());
+      adj.get(a)!.add(b);
+      adj.get(b)!.add(a);
+    });
+    const visited = new Set<string>();
+    const groups: string[][] = [];
+    adj.forEach((_, start) => {
+      if (visited.has(start)) return;
+      const comp: string[] = [];
+      const stack = [start];
+      visited.add(start);
+      while (stack.length > 0) {
+        const cur = stack.pop()!;
+        comp.push(cur);
+        adj.get(cur)?.forEach((nxt) => {
+          if (!visited.has(nxt)) {
+            visited.add(nxt);
+            stack.push(nxt);
+          }
+        });
+      }
+      if (comp.length >= 2) groups.push(comp);
+    });
+    return groups;
+  }
+
+  // 4. Construct Nodes & Hierarchical Parent-Child Relationships
+  const nodes: MapNode[] = [];
+  nodes.push({ id: "node-wan", name: "الإنترنت", type: "wan", x: 600, y: 40 });
+  nodes.push({
+    id: "node-router",
+    name: routerName,
+    type: "router",
+    x: 600,
+    y: 230,
+    parentId: "node-wan",
+    ip: routerIp,
+  });
+
+  const hubs: MapNode[] = [];
+  const autoSwitches: MapSwitch[] = []; // track switches cleanly for layout
+  const generatedSwitches: MapNode[] = [];
+  const generatedDevices: MapNode[] = [];
+
+  sortedLanPorts.forEach((portName) => {
+    const hubId = `hub-${portName.toLowerCase()}`;
+    const c = getPortColor(portName);
+    hubs.push({
+      id: hubId,
+      name: portName,
       type: "hub",
-      x: lan1Pos.x,
-      y: lan1Pos.y,
+      x: 0,
+      y: 0,
       parentId: "node-router",
-      uplinkColor: "#5B3DF5",
-      uplinkHub: "LAN1",
-    },
-    {
-      id: "hub-lan2",
-      name: "LAN2",
-      type: "hub",
-      x: lan2Pos.x,
-      y: lan2Pos.y,
-      parentId: "node-router",
-      uplinkColor: "#FF7A45",
-      uplinkHub: "LAN2",
-    },
-    {
+      uplinkHub: portName,
+      uplinkColor: c.color,
+    });
+
+    const portDevices = wiredOnline.filter((d) => {
+      const mac = (d.mac || "").toUpperCase();
+      const sOverride = serverTopo.get(mac);
+      const effPort = sOverride?.portOverride ? normPortName(sOverride.portOverride) : d._resolvedPort;
+      return effPort === portName;
+    });
+
+    // Separate devices that belong to an AP/Router peer child via correlation or explicit parent override
+    const directCandidates: any[] = [];
+    portDevices.forEach((d) => {
+      const mac = (d.mac || "").toUpperCase();
+      const devId = d._nodeId;
+      const explicitParent = savedParents[mac] || savedParents[devId];
+      const serverParent = serverTopo.get(mac)?.parentMac
+        ? devIdByMac.get(serverTopo.get(mac)!.parentMac!)
+        : undefined;
+      const corrParent = apChildByMac.get(mac);
+
+      if (explicitParent?.parentId && explicitParent.parentId !== hubId) {
+        // User explicitly assigned this device elsewhere (e.g. custom switch or peer router)
+        generatedDevices.push({
+          id: devId,
+          name: resolveDisplayName(d),
+          type: "device",
+          subType: (d.category as any) || "router",
+          x: 0,
+          y: 0,
+          parentId: explicitParent.parentId,
+          portIndex:
+            explicitParent.portIndex !== undefined
+              ? explicitParent.portIndex
+              : portAssignments[mac],
+          ip: d.ip,
+          mac: d.mac,
+          cableQuality: d.cableHealth?.score ?? 100,
+          blocked: d.blocked,
+          vendor: d.vendor,
+          online: true,
+        });
+      } else if (!explicitParent && (serverParent || corrParent)) {
+        generatedDevices.push({
+          id: devId,
+          name: resolveDisplayName(d),
+          type: "device",
+          subType: (d.category as any) || "phone",
+          x: 0,
+          y: 0,
+          parentId: serverParent || corrParent,
+          ip: d.ip,
+          mac: d.mac,
+          cableQuality: d.cableHealth?.score ?? 100,
+          blocked: d.blocked,
+          vendor: d.vendor,
+          online: true,
+        });
+      } else {
+        directCandidates.push(d);
+      }
+    });
+
+    // Pure physical rule:
+    // - 0 devices on LAN port -> empty port (no switch!)
+    // - 1 device on LAN port -> direct cable to hub (no switch!)
+    // - 2+ devices on LAN port -> physically requires a switch (or correlation-detected sub-switches)
+    if (directCandidates.length === 1) {
+      const d = directCandidates[0];
+      const mac = (d.mac || "").toUpperCase();
+      generatedDevices.push({
+        id: d._nodeId,
+        name: resolveDisplayName(d),
+        type: "device",
+        subType: (d.category as any) || "router",
+        x: 0,
+        y: 0,
+        parentId: hubId,
+        ip: d.ip,
+        mac: d.mac,
+        cableQuality: d.cableHealth?.score ?? 100,
+        blocked: d.blocked,
+        vendor: d.vendor,
+        online: true,
+      });
+    } else if (directCandidates.length >= 2) {
+      const macsOnPort = directCandidates.map((d) => (d.mac || "").toUpperCase()).filter(Boolean);
+      const corrGroups = getCorrelationComponents(portName, macsOnPort);
+      const groupedMacSet = new Set<string>();
+      corrGroups.forEach((g) => g.forEach((m) => groupedMacSet.add(m)));
+
+      const remaining = directCandidates.filter(
+        (d) => !groupedMacSet.has((d.mac || "").toUpperCase())
+      );
+
+      // Build switches for remaining devices (chunked cleanly into <= 15 devices per switch)
+      const swSpecs: Array<{ id: string; name: string; parentId: string; devs: any[]; isSub?: boolean }> = [];
+      if (remaining.length >= 2) {
+        const chunkSize = 15;
+        const totalChunks = Math.ceil(remaining.length / chunkSize);
+        for (let cIdx = 0; cIdx < totalChunks; cIdx++) {
+          const chunk = remaining.slice(cIdx * chunkSize, (cIdx + 1) * chunkSize);
+          const swId =
+            cIdx === 0
+              ? `switch-auto-${portName.toLowerCase()}`
+              : `switch-auto-${portName.toLowerCase()}-${cIdx + 1}`;
+          const swLabel =
+            totalChunks === 1 && corrGroups.length === 0
+              ? `سويتش ${portName} (تلقائي)`
+              : `سويتش ${cIdx + 1} · ${portName}`;
+          const parentId = cIdx === 0 ? hubId : `switch-auto-${portName.toLowerCase()}`;
+          swSpecs.push({ id: swId, name: swLabel, parentId, devs: chunk });
+        }
+      } else if (remaining.length === 1) {
+        // Remaining single device connects directly to hub alongside correlation sub-switch
+        const d = remaining[0];
+        generatedDevices.push({
+          id: d._nodeId,
+          name: resolveDisplayName(d),
+          type: "device",
+          subType: (d.category as any) || "router",
+          x: 0,
+          y: 0,
+          parentId: hubId,
+          ip: d.ip,
+          mac: d.mac,
+          cableQuality: d.cableHealth?.score ?? 100,
+          blocked: d.blocked,
+          vendor: d.vendor,
+          online: true,
+        });
+      }
+
+      // Build inferred correlation switches (co-failure / jitter switch_group)
+      corrGroups.forEach((groupMacs, gIdx) => {
+        const gSet = new Set(groupMacs);
+        const groupDevs = directCandidates.filter((d) => gSet.has((d.mac || "").toUpperCase()));
+        if (groupDevs.length < 2) return;
+        const swId = `switch-corr-${portName.toLowerCase()}-${gIdx + 1}`;
+        const primarySwId = swSpecs[0]?.id;
+        swSpecs.push({
+          id: swId,
+          name: `سويتش فرعي #${gIdx + 1} (${portName})`,
+          parentId: primarySwId || hubId,
+          devs: groupDevs,
+          isSub: Boolean(primarySwId),
+        });
+      });
+
+      swSpecs.forEach((spec) => {
+        const swNode: MapNode = {
+          id: spec.id,
+          name: spec.name,
+          type: "switch",
+          x: 0,
+          y: 0,
+          parentId: spec.parentId,
+          ports: chooseSwitchPortSize(spec.devs.length + 1),
+          uplinkHub: portName,
+          uplinkColor: spec.isSub ? "#8B6CFF" : c.color,
+          selected: false,
+        };
+        generatedSwitches.push(swNode);
+
+        spec.devs.forEach((d) => {
+          const mac = (d.mac || "").toUpperCase();
+          const assignedPort = portAssignments[mac];
+          generatedDevices.push({
+            id: d._nodeId,
+            name: resolveDisplayName(d),
+            type: "device",
+            subType: (d.category as any) || "router",
+            x: 0,
+            y: 0,
+            parentId: spec.id,
+            portIndex: typeof assignedPort === "number" ? assignedPort : undefined,
+            ip: d.ip,
+            mac: d.mac,
+            cableQuality: d.cableHealth?.score ?? 100,
+            blocked: d.blocked,
+            vendor: d.vendor,
+            online: true,
+          });
+        });
+      });
+    }
+  });
+
+  // 5. Wi-Fi Hub & Real Wi-Fi Clients
+  const hasWifiHub =
+    wifiAll.length > 0 ||
+    Boolean(input.hasActiveWifi) ||
+    customNodes.some((cn) => cn.parentId === "hub-wifi");
+
+  if (hasWifiHub) {
+    hubs.push({
       id: "hub-wifi",
       name: "الويفي",
       type: "hub",
-      x: wifiPos.x,
-      y: wifiPos.y,
+      x: 0,
+      y: 0,
       parentId: "node-router",
-      uplinkColor: "#5B3DF5",
       uplinkHub: "WIFI",
-    },
-    {
-      id: "hub-lan3",
-      name: "LAN3",
-      type: "hub",
-      x: lan3Pos.x,
-      y: lan3Pos.y,
-      parentId: "node-router",
-      uplinkColor: "#D7F25C",
-      uplinkHub: "LAN3",
-    },
-    {
-      id: "hub-lan4",
-      name: "LAN4",
-      type: "hub",
-      x: lan4Pos.x,
-      y: lan4Pos.y,
-      parentId: "node-router",
-      uplinkColor: "#14121F",
-      uplinkHub: "LAN4",
-    },
-    {
-      id: "switch-salon",
-      name: "سويتش 1 الصالون (LAN1)",
-      type: "switch",
-      x: sw1Pos.x,
-      y: sw1Pos.y,
-      parentId: "hub-lan1",
-      ports: 8,
-      uplinkHub: "LAN1",
       uplinkColor: "#5B3DF5",
-      selected: false,
-    },
-    {
-      id: "switch-lan1-sub",
-      name: "سويتش 2 (LAN1)",
-      type: "switch",
-      x: sw1SubPos.x,
-      y: sw1SubPos.y,
-      parentId: "hub-lan1",
-      ports: 8,
-      uplinkHub: "LAN1",
-      uplinkColor: "#5B3DF5",
-      selected: false,
-    },
-    {
-      id: "switch-lan1-cascade",
-      name: "سويتش الجيران (موزع)",
-      type: "switch",
-      x: sw1CascadePos.x,
-      y: sw1CascadePos.y,
-      parentId: "switch-lan1-sub",
-      portIndex: 2,
-      ports: 5,
-      uplinkHub: "LAN1",
-      uplinkColor: "#8B6CFF",
-      selected: false,
-    },
-    {
-      id: "switch-bureau",
-      name: "سويتش المكتب (LAN2)",
-      type: "switch",
-      x: sw2Pos.x,
-      y: sw2Pos.y,
-      parentId: "hub-lan2",
-      ports: 8,
-      uplinkHub: "LAN2",
-      uplinkColor: "#FF7A45",
-      selected: false,
-    },
-  ];
-
-  const portAssignments = loadPortAssignments();
-  const savedParents = loadDeviceParents();
-
-  // Find L9AHIRA router ID if present for hierarchical phone attachment
-  const l9ahiraRouter = (cableDevices || []).find(
-    (d) => d.name === "L9AHIRA RACHID 1" || (d.group === "L9AHIRA RACHID" && d.category === "router")
-  );
-  const l9ahiraRouterId = l9ahiraRouter?.mac
-    ? "dev-" + l9ahiraRouter.mac.replace(/:/g, "").toLowerCase()
-    : "dev-l9ahira-1";
-
-  // LAN1 Online Devices (smart distribution + auto port tracing)
-  const lan1 = (cableDevices || []).filter((d) => d.port === "LAN1" && d.online);
-  let salonCount = 0;
-  lan1.forEach((d, i) => {
-    const upperMac = (d.mac || "").toUpperCase();
-    const devId = "dev-" + (d.mac ? d.mac.replace(/:/g, "").toLowerCase() : `lan1-${i}`);
-    const assignedPort = portAssignments[upperMac];
-    const hasExplicitPort = typeof assignedPort === "number";
-
-    // Hierarchy resolution: respect saved parent first, then smart grouping
-    const savedParentEntry = savedParents[upperMac] || savedParents[devId];
-    let parentId = "switch-salon";
-    let portIndex = hasExplicitPort ? assignedPort : undefined;
-
-    if (savedParentEntry) {
-      parentId = savedParentEntry.parentId;
-      if (savedParentEntry.portIndex !== undefined) {
-        portIndex = savedParentEntry.portIndex;
-      }
-    } else {
-      // Smart Auto-Topology based on user's network structure:
-      if (d.name.includes("L9AHIRA") && d.category === "phone") {
-        parentId = l9ahiraRouterId;
-      } else if (
-        d.name === "L9AHIRA RACHID 1" ||
-        d.name === "L9AHIRA RACHID 2" ||
-        d.name.toLowerCase().includes("l9ahira") ||
-        d.name === "RETALI" ||
-        d.name === "smail" ||
-        d.name === "3azkri"
-      ) {
-        parentId = "switch-lan1-cascade";
-      } else if (salonCount < 4) {
-        parentId = "switch-salon";
-        salonCount += 1;
-      } else {
-        parentId = "switch-lan1-sub";
-      }
-    }
-
-    // Default positioning based on parent switch/device
-    const isRow0 = i % 4 < 2;
-    const col = i % 4;
-    let defaultX = sw1Pos.x - 70 + col * 46;
-    let defaultY = sw1Pos.y + 75;
-
-    if (parentId === "switch-lan1-sub") {
-      defaultX = sw1SubPos.x - 70 + col * 46;
-      defaultY = sw1SubPos.y + 75;
-    } else if (parentId === "switch-lan1-cascade") {
-      defaultX = sw1CascadePos.x - 60 + (i % 3) * 44;
-      defaultY = sw1CascadePos.y + 75;
-    } else if (parentId === l9ahiraRouterId) {
-      defaultX = sw1CascadePos.x - 50;
-      defaultY = sw1CascadePos.y + 135;
-    }
-
-    const pos = getNodePos(devId, defaultX, defaultY);
-
-    nodes.push({
-      id: devId,
-      name: d.name,
-      type: "device",
-      subType: (d.category as any) || "router",
-      x: pos.x,
-      y: pos.y,
-      parentId,
-      portIndex,
-      ip: d.ip,
-      mac: d.mac,
-      cableQuality: d.cableHealth?.score ?? 100,
-      blocked: d.blocked,
-      vendor: d.vendor,
-      selected: false,
     });
-  });
 
-  // LAN2 Online Devices
-  const lan2 = (cableDevices || []).filter((d) => d.port === "LAN2" && d.online);
-  lan2.forEach((d, i) => {
-    const upperMac = (d.mac || "").toUpperCase();
-    const assignedPort = portAssignments[upperMac];
-    const hasExplicitPort = typeof assignedPort === "number";
-    const devId = "dev-" + (d.mac ? d.mac.replace(/:/g, "").toLowerCase() : `lan2-${i}`);
+    wifiAll.forEach((w, i) => {
+      const mac = (w.mac || "").toUpperCase();
+      const devId = w._nodeId || `dev-wifi-${i}`;
+      const explicitParent = savedParents[mac] || savedParents[devId];
+      const corrParent = apChildByMac.get(mac);
+      const resolvedParent =
+        explicitParent?.parentId || corrParent || "hub-wifi";
 
-    const savedParentEntry = savedParents[upperMac] || savedParents[devId];
-    let parentId = "switch-bureau";
-    let portIndex = hasExplicitPort ? assignedPort : undefined;
-
-    if (savedParentEntry) {
-      parentId = savedParentEntry.parentId;
-      if (savedParentEntry.portIndex !== undefined) {
-        portIndex = savedParentEntry.portIndex;
-      }
-    }
-
-    const isRow0 = i < 5;
-    const col = isRow0 ? i : i - 5;
-    const defaultX = isRow0 ? sw2Pos.x - 92 + col * 46 : sw2Pos.x - 69 + col * 46;
-    const defaultY = isRow0 ? sw2Pos.y + 95 : sw2Pos.y + 155;
-    const pos = getNodePos(devId, defaultX, defaultY);
-
-    nodes.push({
-      id: devId,
-      name: d.name,
-      type: "device",
-      subType: (d.category as any) || "router",
-      x: pos.x,
-      y: pos.y,
-      parentId,
-      portIndex,
-      ip: d.ip,
-      mac: d.mac,
-      cableQuality: d.cableHealth?.score ?? 100,
-      blocked: d.blocked,
-      vendor: d.vendor,
-      selected: false,
-    });
-  });
-
-  // LAN3 Device (if online)
-  const lan3Dev = (cableDevices || []).find((d) => d.port === "LAN3" && d.online);
-  if (lan3Dev) {
-    const devId = "dev-lan3";
-    const pos = getNodePos(devId, lan3Pos.x + 165, lan3Pos.y);
-    nodes.push({
-      id: devId,
-      name: lan3Dev.name,
-      type: "device",
-      subType: (lan3Dev.category as any) || "router",
-      x: pos.x,
-      y: pos.y,
-      parentId: "hub-lan3",
-      ip: lan3Dev.ip,
-      mac: lan3Dev.mac,
-      cableQuality: lan3Dev.cableHealth?.score ?? 100,
+      generatedDevices.push({
+        id: devId,
+        name: resolveDisplayName(w, "هاتف"),
+        type: "device",
+        subType: (w.category as any) || "phone",
+        x: 0,
+        y: 0,
+        parentId: resolvedParent,
+        portIndex: explicitParent?.portIndex,
+        ip: w.ip,
+        mac: w.mac,
+        vendor: w.vendor,
+        blocked: w.blocked,
+        online: true,
+        band: w.band,
+        ssidName: w.ssidName,
+      });
     });
   }
 
-  // LAN4 Device (if online)
-  const lan4Dev = (cableDevices || []).find((d) => d.port === "LAN4" && d.online);
-  if (lan4Dev) {
-    const devId = "dev-lan4";
-    const pos = getNodePos(devId, lan4Pos.x + 165, lan4Pos.y);
-    nodes.push({
-      id: devId,
-      name: lan4Dev.name,
-      type: "device",
-      subType: "camera",
-      x: pos.x,
-      y: pos.y,
-      parentId: "hub-lan4",
-      ip: lan4Dev.ip,
-      mac: lan4Dev.mac,
-      cableQuality: lan4Dev.cableHealth?.score ?? 100,
+  // 6. Offline Devices Hub (only if offline wired devices exist)
+  if (offlineAll.length > 0) {
+    hubs.push({
+      id: "hub-offline",
+      name: "غير متصل",
+      type: "hub",
+      x: 0,
+      y: 0,
+      parentId: "node-router",
+      uplinkHub: "OFFLINE",
+      uplinkColor: "#9A98AD",
+    });
+
+    offlineAll.forEach((d, i) => {
+      const mac = (d.mac || "").toUpperCase();
+      const devId = "dev-offline-" + (mac ? mac.replace(/:/g, "").toLowerCase() : i);
+      generatedDevices.push({
+        id: devId,
+        name: resolveDisplayName(d),
+        type: "device",
+        subType: (d.category as any) || "pc",
+        x: 0,
+        y: 0,
+        parentId: "hub-offline",
+        ip: d.ip,
+        mac: d.mac,
+        vendor: d.vendor,
+        blocked: d.blocked,
+        online: false,
+      });
     });
   }
 
-  // Real Wi-Fi Connected Clients as draggable nodes (cleanly centered above LAN3)
-  const wifiApX = wifiPos.x + 115;
-  (wifiClients || []).forEach((c, i) => {
-    const row = Math.floor(i / 5);
-    const col = i % 5;
-    const colsInRow = Math.min(5, (wifiClients || []).length - row * 5);
-    const defaultX = Math.round(wifiApX - ((colsInRow - 1) * 56) / 2 + col * 56);
-    const defaultY = wifiPos.y + 72 + row * 68;
-    const devId = "dev-wifi-" + (c.mac ? c.mac.replace(/:/g, "").toLowerCase() : i);
-    const pos = getNodePos(devId, defaultX, defaultY);
-    const safeName = c.name || c.friendlyName || (c.hostname && c.hostname !== "Wi-Fi Device" ? c.hostname : (c.vendor || c.ip || (c.mac ? `هاتف ${c.mac.slice(-5)}` : `هاتف ${i + 1}`)));
-    nodes.push({
-      id: devId,
-      name: safeName,
-      type: "device",
-      subType: "phone",
-      x: pos.x,
-      y: pos.y,
-      parentId: "hub-wifi",
-      ip: c.ip,
-      mac: c.mac,
-      vendor: c.vendor,
-      selected: false,
-    });
-  });
+  // Merge everything before filtering & port assignment
+  const allNodes: MapNode[] = [...nodes, ...hubs, ...generatedSwitches, ...generatedDevices];
 
-  // All Disconnected Devices (real data only, no fake limit)
-  (offlineCable || []).forEach((d, i) => {
-    const devId = "dev-offline-" + (d.mac ? d.mac.replace(/:/g, "").toLowerCase() : i);
-    const defaultX = 420 + (i % 4) * 65;
-    const defaultY = 508 + Math.floor(i / 4) * 55;
-    const pos = getNodePos(devId, defaultX, defaultY);
-    nodes.push({
-      id: devId,
-      name: d.name,
-      type: "device",
-      subType: (d.category as any) || "pc",
-      x: pos.x,
-      y: pos.y,
-      ip: d.ip,
-      mac: d.mac,
-      parentId: undefined, // disconnected
-    });
-  });
-
-  // Merge user-added custom nodes (switches, cameras, APs, etc.)
-  const customNodes = loadCustomNodes();
-  const existingIds = new Set(nodes.map((n) => n.id));
+  // Merge user-added custom nodes from Palette
+  const existingIds = new Set(allNodes.map((n) => n.id));
   customNodes.forEach((cn) => {
     if (existingIds.has(cn.id)) return;
-    const pos = getNodePos(cn.id, cn.x, cn.y);
-    const savedParentEntry = savedParents[cn.id] || (cn.mac ? savedParents[cn.mac.toUpperCase()] : undefined);
-    nodes.push({
+    const savedParentEntry =
+      savedParents[cn.id] || (cn.mac ? savedParents[cn.mac.toUpperCase()] : undefined);
+    allNodes.push({
       ...cn,
-      x: pos.x,
-      y: pos.y,
       parentId: savedParentEntry ? savedParentEntry.parentId : cn.parentId,
-      portIndex: savedParentEntry?.portIndex !== undefined ? savedParentEntry.portIndex : cn.portIndex,
+      portIndex:
+        savedParentEntry?.portIndex !== undefined ? savedParentEntry.portIndex : cn.portIndex,
     });
   });
 
-  // Filter out any user-deleted nodes
-  const deletedSet = new Set(loadDeletedNodeIds());
-  const finalNodes = deletedSet.size > 0 ? nodes.filter((n) => !deletedSet.has(n.id)) : nodes;
+  // Apply user-saved parent overrides cleanly for custom switches/routers
+  const nodeIdSet = new Set(allNodes.map((n) => n.id));
+  allNodes.forEach((n) => {
+    if (n.type === "switch" || n.type === "device") {
+      const macKey = (n.mac || "").toUpperCase();
+      const entry = (macKey && savedParents[macKey]) || savedParents[n.id];
+      if (entry && (!entry.parentId || nodeIdSet.has(entry.parentId))) {
+        n.parentId = entry.parentId || undefined;
+        if (entry.portIndex !== undefined) {
+          n.portIndex = entry.portIndex;
+        }
+      } else if (n.parentId && !nodeIdSet.has(n.parentId)) {
+        // Orphaned parent (e.g. router changed) -> attach directly back to hub/router
+        n.parentId = "node-router";
+      }
+    }
+  });
 
-  // Apply saved Switch metadata overrides (ports, name, uplink) & auto-assign free ports to unassigned devices
-  const switchMeta = loadSwitchMeta();
+  // Filter user-deleted nodes
+  const finalNodes = deletedSet.size > 0 ? allNodes.filter((n) => !deletedSet.has(n.id)) : allNodes;
+
+  // 7. Apply Switch metadata & auto-assign free physical ports (2..N, port 1 = Uplink)
   finalNodes.forEach((sw) => {
     if (sw.type !== "switch") return;
     const override = switchMeta[sw.id];
@@ -856,17 +946,12 @@ export function buildInitialNodes(
     const childSwitches = finalNodes.filter((c) => c.type === "switch" && c.parentId === sw.id);
     const childDevices = finalNodes.filter((c) => c.type === "device" && c.parentId === sw.id);
 
-    // Port 1 is reserved as Uplink LED on every switch
     const usedPorts = new Set<number>([1]);
     childSwitches.forEach((cs) => {
-      if (typeof cs.portIndex === "number" && cs.portIndex >= 2) {
-        usedPorts.add(cs.portIndex);
-      }
+      if (typeof cs.portIndex === "number" && cs.portIndex >= 2) usedPorts.add(cs.portIndex);
     });
     childDevices.forEach((cd) => {
-      if (typeof cd.portIndex === "number" && cd.portIndex >= 2) {
-        usedPorts.add(cd.portIndex);
-      }
+      if (typeof cd.portIndex === "number" && cd.portIndex >= 2) usedPorts.add(cd.portIndex);
     });
 
     const nextFreePort = () => {
@@ -876,17 +961,13 @@ export function buildInitialNodes(
       return p;
     };
 
-    // Auto-trace any child switch or device that has no explicit port (and wasn't manually disconnected via portIndex === 0)
     childSwitches.forEach((cs) => {
-      if (cs.portIndex === undefined) {
-        cs.portIndex = nextFreePort();
-      }
+      if (cs.portIndex === undefined) cs.portIndex = nextFreePort();
     });
     childDevices.forEach((cd) => {
       if (cd.portIndex === undefined) {
         cd.portIndex = nextFreePort();
       } else if (cd.portIndex === 0) {
-        // Explicit manual disconnect -> render as unassigned
         cd.portIndex = undefined;
       }
     });
@@ -894,42 +975,255 @@ export function buildInitialNodes(
     const highestPort = usedPorts.size > 0 ? Math.max(...Array.from(usedPorts)) : 1;
     const neededPorts = Math.max(highestPort, 1 + childSwitches.length + childDevices.length);
     if (!override?.ports) {
-      sw.ports = neededPorts <= 5 ? 5 : neededPorts <= 8 ? 8 : neededPorts <= 16 ? 16 : 24;
+      sw.ports = chooseSwitchPortSize(neededPorts);
     }
   });
 
-  // Clean per-parent non-overlapping grid layout for devices without saved positions
-  const switchIds = new Set(finalNodes.filter((n) => n.type === "switch").map((n) => n.id));
-  const groupedByParent = new Map<string, MapNode[]>();
-  finalNodes.forEach((n) => {
-    if (n.type !== "device" || !n.parentId) return;
-    if (n.parentId.startsWith("hub-") || n.parentId === "node-router" || n.parentId === "node-wan") return;
-    if (!groupedByParent.has(n.parentId)) groupedByParent.set(n.parentId, []);
-    groupedByParent.get(n.parentId)!.push(n);
-  });
+  // =========================================================================
+  // 8. DYNAMIC ZERO-OVERLAP AUTO-LAYOUT ENGINE
+  // =========================================================================
+  const CENTER_X = 620;
+  const HUB_OFFSET_X = 215;
+  const BRANCH_GAP_Y = 54;
+  const COL_GAP = 72;
+  const ROW_GAP = 78;
 
-  groupedByParent.forEach((children, pId) => {
-    const parentNode = finalNodes.find((p) => p.id === pId);
-    if (!parentNode) return;
-    const isSwitch = switchIds.has(pId);
-    const maxPerRow = isSwitch ? (children.length > 6 ? 5 : 4) : 3;
-    const colGap = 68; // Wide enough so 8-char labels & 100% badges never overlap
-    const rowGap = 74;
-    const startOffsetY = isSwitch ? 95 : 78;
+  const finalHubs = finalNodes.filter((n) => n.type === "hub");
+  const lanHubNodes = finalHubs.filter((h) => h.id !== "hub-wifi" && h.id !== "hub-offline");
+  const wifiHubNode = finalHubs.find((h) => h.id === "hub-wifi");
+  const offlineHubNode = finalHubs.find((h) => h.id === "hub-offline");
 
-    children.forEach((child, idx) => {
-      // Only reposition if user hasn't manually dragged/saved a position for this device
-      if (saved[child.id] && typeof saved[child.id].x === "number") return;
+  const splitIndex = Math.ceil(lanHubNodes.length / 2);
+  const leftHubs = lanHubNodes.slice(0, splitIndex);
+  const rightHubs: MapNode[] = [
+    ...(wifiHubNode ? [wifiHubNode] : []),
+    ...lanHubNodes.slice(splitIndex),
+  ];
+
+  const getPeerChildren = (devId: string) =>
+    finalNodes.filter((n) => n.type === "device" && n.parentId === devId);
+
+  const getSwitchBlockMetrics = (sw: MapNode) => {
+    const swDevs = finalNodes.filter((n) => n.type === "device" && n.parentId === sw.id);
+    const maxPerRow = swDevs.length > 8 ? 5 : 4;
+    const devRows = swDevs.length > 0 ? Math.ceil(swDevs.length / maxPerRow) : 0;
+    const hasPeerChildren = swDevs.some((d) => getPeerChildren(d.id).length > 0);
+    const extraPeerH = hasPeerChildren ? 82 : 0;
+    const topSpace = 48; // space above switch for its name tag
+    const bodyHeight = devRows > 0 ? 92 + (devRows - 1) * ROW_GAP + 52 : 45;
+    return {
+      swDevs,
+      maxPerRow,
+      topSpace,
+      height: topSpace + bodyHeight + extraPeerH,
+    };
+  };
+
+  // Recursively collect switches under a hub (direct + cascaded)
+  const getSwitchesInBranch = (hubId: string): MapNode[] => {
+    const directSw = finalNodes.filter((n) => n.type === "switch" && n.parentId === hubId);
+    const allSw: MapNode[] = [];
+    const queue = [...directSw];
+    const seen = new Set<string>();
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      if (seen.has(cur.id)) continue;
+      seen.add(cur.id);
+      allSw.push(cur);
+      finalNodes
+        .filter((n) => n.type === "switch" && n.parentId === cur.id)
+        .forEach((c) => queue.push(c));
+    }
+    return allSw;
+  };
+
+  const getBranchHeight = (hub: MapNode): number => {
+    if (hub.id === "hub-wifi") {
+      const wDevs = finalNodes.filter((n) => n.type === "device" && n.parentId === "hub-wifi");
+      const rows = Math.max(1, Math.ceil(wDevs.length / 5));
+      return Math.max(115, 95 + rows * 72);
+    }
+    const branchSwitches = getSwitchesInBranch(hub.id);
+    const directDevs = finalNodes.filter((n) => n.type === "device" && n.parentId === hub.id);
+
+    let totalH = 0;
+    if (branchSwitches.length > 0) {
+      totalH = branchSwitches.reduce(
+        (acc, sw, idx) => acc + getSwitchBlockMetrics(sw).height + (idx > 0 ? 28 : 0),
+        0
+      );
+    }
+    if (directDevs.length > 0) {
+      const rows = Math.ceil(directDevs.length / 3);
+      totalH += Math.max(96, rows * ROW_GAP + 28);
+    }
+    return Math.max(82, totalH);
+  };
+
+  const applySavedPos = (node: MapNode, defX: number, defY: number) => {
+    const s = saved[node.id];
+    if (s && typeof s.x === "number" && typeof s.y === "number") {
+      node.x = s.x;
+      node.y = s.y;
+    } else {
+      node.x = Math.round(defX);
+      node.y = Math.round(defY);
+    }
+  };
+
+  const layoutSide = (sideHubs: MapNode[], side: "left" | "right"): number => {
+    let curY = 105;
+    const dir = side === "left" ? -1 : 1;
+
+    sideHubs.forEach((hub) => {
+      const branchH = getBranchHeight(hub);
+      const branchTop = curY;
+
+      if (hub.id === "hub-wifi") {
+        const hubX = CENTER_X + dir * HUB_OFFSET_X;
+        const hubY = branchTop + 34;
+        applySavedPos(hub, hubX, hubY);
+
+        const wDevs = finalNodes.filter((n) => n.type === "device" && n.parentId === "hub-wifi");
+        const apX = hub.x + dir * 135;
+        const apY = hub.y;
+        wDevs.forEach((w, idx) => {
+          const maxPerRow = 5;
+          const row = Math.floor(idx / maxPerRow);
+          const col = idx % maxPerRow;
+          const colsInRow = Math.min(maxPerRow, wDevs.length - row * maxPerRow);
+          const rowStartX = apX - ((colsInRow - 1) * 60) / 2;
+          applySavedPos(w, rowStartX + col * 60, apY + 72 + row * 70);
+        });
+      } else {
+        const branchSwitches = getSwitchesInBranch(hub.id);
+        const directDevs = finalNodes.filter((n) => n.type === "device" && n.parentId === hub.id);
+
+        const hubX = CENTER_X + dir * HUB_OFFSET_X;
+        const hubY =
+          branchSwitches.length > 0
+            ? branchTop + getSwitchBlockMetrics(branchSwitches[0]).topSpace + 18
+            : branchTop + branchH / 2;
+        applySavedPos(hub, hubX, hubY);
+
+        let subY = branchTop;
+
+        // Place switches & their attached devices
+        branchSwitches.forEach((sw, swIdx) => {
+          const metrics = getSwitchBlockMetrics(sw);
+          const swWidth = 24 + (sw.ports || 8) * 11;
+          const baseDist = Math.max(210, swWidth / 2 + 125);
+          const swX = hub.x + dir * (swIdx > 0 && sw.parentId?.startsWith("switch-") ? baseDist + 40 : baseDist);
+          const swY = subY + metrics.topSpace + 18;
+          applySavedPos(sw, swX, swY);
+
+          metrics.swDevs.forEach((dev, idx) => {
+            const row = Math.floor(idx / metrics.maxPerRow);
+            const col = idx % metrics.maxPerRow;
+            const colsInRow = Math.min(
+              metrics.maxPerRow,
+              metrics.swDevs.length - row * metrics.maxPerRow
+            );
+            const rowStartX = sw.x - ((colsInRow - 1) * COL_GAP) / 2;
+            applySavedPos(dev, rowStartX + col * COL_GAP, sw.y + 92 + row * ROW_GAP);
+
+            // Layout any peer-child phones/devices behind this router/AP
+            const peers = getPeerChildren(dev.id);
+            peers.forEach((peer, pIdx) => {
+              const pStartX = dev.x - ((peers.length - 1) * 56) / 2;
+              applySavedPos(peer, pStartX + pIdx * 56, dev.y + 74);
+            });
+          });
+
+          subY += metrics.height + 28;
+        });
+
+        // Place direct devices connected straight to this LAN hub (e.g. 1 device on LAN3/LAN4)
+        if (directDevs.length > 0) {
+          directDevs.forEach((dev, idx) => {
+            const row = Math.floor(idx / 3);
+            const col = idx % 3;
+            const defX = hub.x + dir * (170 + col * 72);
+            const defY =
+              branchSwitches.length > 0 ? subY + 25 + row * ROW_GAP : hub.y + row * ROW_GAP;
+            applySavedPos(dev, defX, defY);
+
+            const peers = getPeerChildren(dev.id);
+            peers.forEach((peer, pIdx) => {
+              const pStartX = dev.x - ((peers.length - 1) * 56) / 2;
+              applySavedPos(peer, pStartX + pIdx * 56, dev.y + 74);
+            });
+          });
+        }
+      }
+
+      curY += branchH + BRANCH_GAP_Y;
+    });
+
+    return curY;
+  };
+
+  const leftBottomY = layoutSide(leftHubs, "left");
+  const rightBottomY = layoutSide(rightHubs, "right");
+
+  const activeHubYs = [...leftHubs, ...rightHubs].map((h) => h.y);
+  const avgHubY =
+    activeHubYs.length > 0
+      ? activeHubYs.reduce((a, b) => a + b, 0) / activeHubYs.length
+      : 230;
+  const routerDefaultY = Math.max(210, Math.round(avgHubY));
+  const routerNode = finalNodes.find((n) => n.id === "node-router")!;
+  applySavedPos(routerNode, CENTER_X, routerDefaultY);
+
+  const wanNode = finalNodes.find((n) => n.id === "node-wan")!;
+  applySavedPos(wanNode, CENTER_X, Math.max(36, routerNode.y - 185));
+
+  // Layout offline hub & devices cleanly underneath center router
+  if (offlineHubNode) {
+    const offlineY = Math.max(routerNode.y + 155, Math.min(leftBottomY, rightBottomY) + 15);
+    applySavedPos(offlineHubNode, CENTER_X, offlineY);
+    const offDevs = finalNodes.filter((n) => n.type === "device" && n.parentId === "hub-offline");
+    const maxPerRow = 4;
+    offDevs.forEach((d, idx) => {
       const row = Math.floor(idx / maxPerRow);
       const col = idx % maxPerRow;
-      const colsInThisRow = Math.min(maxPerRow, children.length - row * maxPerRow);
-      const rowStartX = parentNode.x - ((colsInThisRow - 1) * colGap) / 2;
-      child.x = Math.round(rowStartX + col * colGap);
-      child.y = Math.round(parentNode.y + startOffsetY + row * rowGap);
+      const colsInRow = Math.min(maxPerRow, offDevs.length - row * maxPerRow);
+      const startX = offlineHubNode.x - ((colsInRow - 1) * 76) / 2;
+      applySavedPos(d, startX + col * 76, offlineHubNode.y + 74 + row * 72);
     });
+  }
+
+  // Layout any custom orphan / direct-to-router devices cleanly
+  const directRouterDevs = finalNodes.filter(
+    (n) => n.type === "device" && n.parentId === "node-router"
+  );
+  directRouterDevs.forEach((d, idx) => {
+    const startX = routerNode.x - ((directRouterDevs.length - 1) * 74) / 2;
+    applySavedPos(d, startX + idx * 74, routerNode.y + 115);
   });
 
+  void autoSwitches;
   return finalNodes;
+}
+
+/**
+ * Backward-compatible entrypoint: accepts either AutoTopologyInput OR legacy positional arguments.
+ */
+export function buildInitialNodes(
+  inputOrCableDevices: AutoTopologyInput | any[] = [],
+  wifiClients: any[] = [],
+  offlineCable: any[] = [],
+  serverCanvas?: { positions?: Record<string, { x: number; y: number }> } | null
+): MapNode[] {
+  if (!Array.isArray(inputOrCableDevices) && inputOrCableDevices && typeof inputOrCableDevices === "object") {
+    return buildAutoTopologyNodes(inputOrCableDevices);
+  }
+  return buildAutoTopologyNodes({
+    cableDevices: Array.isArray(inputOrCableDevices) ? inputOrCableDevices : [],
+    wifiClients,
+    offlineCable,
+    serverCanvas: serverCanvas || undefined,
+  });
 }
 
 export function buildCablesFromNodes(nodes: MapNode[]): MapCable[] {
@@ -945,20 +1239,22 @@ export function buildCablesFromNodes(nodes: MapNode[]): MapCable[] {
     if (parent.type === "wan") {
       color = "#5B3DF5";
     } else if (parent.type === "router") {
-      if (n.name === "LAN2") color = "#FF7A45";
-      else if (n.name === "LAN3") color = "#8FB000";
-      else if (n.name === "LAN4") {
-        color = "#14121F";
+      color = n.uplinkColor || "#5B3DF5";
+      if (n.id === "hub-offline") {
+        color = "#9A98AD";
         dashed = true;
       }
     } else if (parent.type === "hub") {
-      color = parent.uplinkColor || (parent.name === "LAN2" ? "#FF7A45" : "#5B3DF5");
+      color = parent.uplinkColor || "#5B3DF5";
+      if (parent.id === "hub-offline") {
+        color = "#9A98AD";
+        dashed = true;
+      }
     } else if (parent.type === "switch") {
       if (n.type === "switch") {
         color = "#8B6CFF";
         dashed = false;
       } else {
-        // Unassigned devices don't draw a port cable until assigned
         if (!n.portIndex) return;
         color = parent.uplinkColor || "#5B3DF5";
       }
@@ -1008,7 +1304,7 @@ export function nodesToSwitches(nodes: MapNode[]): MapSwitch[] {
       ports: sw.ports || 8,
       parentId: sw.parentId,
       portIndex: sw.portIndex,
-      uplinkHub: (sw.uplinkHub as any) || "LAN1",
+      uplinkHub: sw.uplinkHub || "LAN1",
       uplinkColor: sw.uplinkColor || "#5B3DF5",
       selected: sw.selected,
       devices: childDevices,

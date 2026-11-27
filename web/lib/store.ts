@@ -290,6 +290,7 @@ export interface DhcpLeaseEntry {
 
 export interface RouterHealthInfo {
   model: string;
+  ip?: string;
   softwareVer?: string;
   hardwareVer?: string;
   cpuUsage: number;

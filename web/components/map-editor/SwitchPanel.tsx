@@ -20,7 +20,7 @@ export function SwitchPanel({
   selectedDeviceId,
   onAssignDevicePort,
 }: SwitchPanelProps) {
-  const [name, setName] = useState(switchData?.name || "Switch Salon");
+  const [name, setName] = useState(switchData?.name || "Switch 1");
   const [uplink, setUplink] = useState<MapSwitch["uplinkHub"]>(
     switchData?.uplinkHub || "LAN1"
   );
@@ -125,13 +125,13 @@ export function SwitchPanel({
           <label className="text-[12px] font-[800] text-[#14121F] block mb-1">
             اسم Switch
           </label>
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Switch Salon..."
-            className="w-full h-[42px] bg-[#F6F6FA] text-[#14121F] font-[700] text-[13px] rounded-[14px] px-3.5 border border-[#EEF0F5] outline-none focus:ring-2 focus:ring-[#5B3DF5]"
-          />
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="اسم السويتش..."
+              className="w-full h-[42px] bg-[#F6F6FA] text-[#14121F] font-[700] text-[13px] rounded-[14px] px-3.5 border border-[#EEF0F5] outline-none focus:ring-2 focus:ring-[#5B3DF5]"
+            />
         </div>
 
         {/* Select "متوصل بـ" */}

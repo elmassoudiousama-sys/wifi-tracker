@@ -53,7 +53,7 @@ export function DevicePanel({
 
   const handleApply = (e: React.FormEvent) => {
     e.preventDefault();
-    onUpdateDevice(parentSwitch?.id || device.parentId || "switch-salon", device.id, {
+    onUpdateDevice(parentSwitch?.id || device.parentId || "node-router", device.id, {
       name,
       type,
       cableQuality,
@@ -147,11 +147,14 @@ export function DevicePanel({
               ))}
             </optgroup>
             <optgroup label="🌐 المنافذ المباشرة بالروتر الرئيسي">
-              <option value="hub-wifi">الويفي الرئيسي (Wi-Fi 2.4/5GHz)</option>
-              <option value="hub-lan1">منفذ LAN1 (مباشر)</option>
-              <option value="hub-lan2">منفذ LAN2 (مباشر)</option>
-              <option value="hub-lan3">منفذ LAN3 (مباشر)</option>
-              <option value="hub-lan4">منفذ LAN4 (كاميرات مراقبة)</option>
+              {allNodes
+                .filter((n) => n.type === "hub" && n.id !== "hub-offline")
+                .map((h) => (
+                  <option key={h.id} value={h.id}>
+                    {h.id === "hub-wifi" ? "الويفي الرئيسي (Wi-Fi)" : `منفذ ${h.name} (مباشر)`}
+                  </option>
+                ))}
+              <option value="node-router">مباشرة بالروتور الرئيسي</option>
             </optgroup>
           </select>
         </div>

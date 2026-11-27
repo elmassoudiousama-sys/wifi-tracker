@@ -3,18 +3,17 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Link from "next/link";
 import {
-  INITIAL_SWITCHES,
   MapDevice,
   MapSwitch,
   MapNode,
-  MapCable,
   PaletteItem,
-  buildInitialNodes,
+  AutoTopologyInput,
+  buildAutoTopologyNodes,
   buildCablesFromNodes,
   clearAutoLayoutOverrides,
+  clearAllMapOverrides,
   nodesToSwitches,
   savePositionsBatch,
-  loadSavedPositions,
   savePortAssignment,
   saveDeviceParent,
   loadDeviceParents,
@@ -45,43 +44,40 @@ export function MapEditor({
   const dashboard = useOptionalDashboard();
   const state = dashboard?.state;
   const cableDevices = dashboard?.cableDevices ?? [];
+  const unknownDevices = dashboard?.unknownDevices ?? [];
   const wifiClients = dashboard?.wifiClients ?? [];
   const offlineCable = dashboard?.offlineCable ?? [];
   const portRates = dashboard?.portRates ?? [];
 
+  const routerModelRaw = state?.routerHealth?.model?.trim() || "";
+  const routerDisplayName = routerModelRaw
+    ? routerModelRaw.toUpperCase().startsWith("ZTE")
+      ? routerModelRaw
+      : `ZTE ${routerModelRaw}`
+    : "ZTE Router";
+  const routerIp = state?.routerHealth?.ip?.trim() || "192.168.1.1";
+
   // Real port rates
   const lanRates = useMemo(() => {
-    const map: Record<string, { rx: number; tx: number; total: number }> = {
-      LAN1: { rx: 0, tx: 0, total: 0 },
-      LAN2: { rx: 0, tx: 0, total: 0 },
-      LAN3: { rx: 0, tx: 0, total: 0 },
-      LAN4: { rx: 0, tx: 0, total: 0 },
-    };
+    const map: Record<string, { rx: number; tx: number; total: number }> = {};
+    (state?.lanPorts || []).forEach((lp) => {
+      if (lp.port) map[lp.port.toUpperCase()] = { rx: 0, tx: 0, total: 0 };
+    });
     (portRates || []).forEach((p) => {
-      if (map[p.port]) {
-        map[p.port] = {
-          rx: Math.round((p.rxMbps || 0) * 100) / 100,
-          tx: Math.round((p.txMbps || 0) * 100) / 100,
-          total: Math.round((p.totalMbps || 0) * 100) / 100,
-        };
-      }
+      const key = (p.port || "").toUpperCase();
+      if (!key) return;
+      map[key] = {
+        rx: Math.round((p.rxMbps || 0) * 100) / 100,
+        tx: Math.round((p.txMbps || 0) * 100) / 100,
+        total: Math.round((p.totalMbps || 0) * 100) / 100,
+      };
     });
     return map;
-  }, [portRates]);
+  }, [portRates, state?.lanPorts]);
 
   const totalDl = useMemo(() => {
     return Object.values(lanRates).reduce((acc, curr) => acc + curr.rx, 0).toFixed(1);
   }, [lanRates]);
-
-  const lan3Device = useMemo(() => {
-    const dev = cableDevices.find((d) => d.port === "LAN3" && d.online);
-    return dev ? { name: dev.name, type: (dev.category as any) || "router" } : undefined;
-  }, [cableDevices]);
-
-  const lan4Device = useMemo(() => {
-    const dev = cableDevices.find((d) => d.port === "LAN4" && d.online);
-    return dev ? { name: dev.name, type: (dev.category as any) || "router" } : undefined;
-  }, [cableDevices]);
 
   const disconnectedDevices = useMemo(() => {
     return (offlineCable || []).map((d) => ({
@@ -93,20 +89,28 @@ export function MapEditor({
 
   const formattedWifiClients = useMemo(() => {
     return (wifiClients || []).map((w) => ({
-      name: w.friendlyName || (w.hostname && w.hostname !== "Wi-Fi Device" ? w.hostname : (w.vendor || w.ip || (w.mac ? w.mac.slice(-5) : "هاتف"))),
+      name:
+        w.friendlyName ||
+        (w.hostname && w.hostname !== "Wi-Fi Device"
+          ? w.hostname
+          : w.vendor || w.ip || (w.mac ? w.mac.slice(-5) : "هاتف")),
       ip: w.ip,
       mac: w.mac,
       vendor: w.vendor,
+      band: w.band,
+      ssidName: w.ssidName,
+      category: w.category,
+      blocked: w.blocked,
     }));
   }, [wifiClients]);
 
   const telemetry: MapTelemetry = useMemo(
     () => ({
+      routerName: routerDisplayName,
+      routerIp,
       internetPing: state?.diagnostics?.internetPing ?? null,
       totalDl,
       lanRates,
-      lan3Device,
-      lan4Device,
       wifiCount: wifiClients.length,
       wifiClients: formattedWifiClients,
       disconnectedDevices,
@@ -122,22 +126,52 @@ export function MapEditor({
       ),
     }),
     [
+      routerDisplayName,
+      routerIp,
       state?.diagnostics?.internetPing,
       state?.updatedAt,
       totalDl,
       lanRates,
-      lan3Device,
-      lan4Device,
       wifiClients.length,
       formattedWifiClients,
       disconnectedDevices,
     ]
   );
 
+  const topologyInput: AutoTopologyInput = useMemo(
+    () => ({
+      routerModel: state?.routerHealth?.model,
+      routerIp: state?.routerHealth?.ip,
+      cableDevices,
+      unknownDevices,
+      wifiClients: formattedWifiClients,
+      offlineCable,
+      lanPorts: state?.lanPorts,
+      lanPortRates: portRates,
+      correlationInsights: state?.correlationInsights,
+      hasActiveWifi: Boolean(
+        formattedWifiClients.length > 0 || (state?.wlanSsids || []).some((s) => s.enable)
+      ),
+      serverCanvas: state?.canvas,
+      serverTopology: state?.topology,
+    }),
+    [
+      state?.routerHealth,
+      state?.lanPorts,
+      state?.correlationInsights,
+      state?.wlanSsids,
+      state?.canvas,
+      state?.topology,
+      cableDevices,
+      unknownDevices,
+      formattedWifiClients,
+      offlineCable,
+      portRates,
+    ]
+  );
+
   // 2. UNIFIED NODE & CABLE DATA MODEL (Single Source of Truth)
-  const [nodes, setNodes] = useState<MapNode[]>(() => {
-    return buildInitialNodes(cableDevices, formattedWifiClients, offlineCable, state?.canvas);
-  });
+  const [nodes, setNodes] = useState<MapNode[]>(() => buildAutoTopologyNodes(topologyInput));
   const [history, setHistory] = useState<MapNode[][]>([]);
 
   // Derived switches and cables for component consumers
@@ -145,57 +179,62 @@ export function MapEditor({
   const cables = useMemo(() => buildCablesFromNodes(nodes), [nodes]);
 
   const [selectedType, setSelectedType] = useState<"switch" | "device">("device");
-  const [selectedSwitchId, setSelectedSwitchId] = useState<string>("switch-salon");
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string>("dev-abdelmnan");
+  const [selectedSwitchId, setSelectedSwitchId] = useState<string>("");
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
   const [tool, setTool] = useState<EditorTool>("select");
   const [zoom, setZoom] = useState<number>(1.0);
   const [toast, setToast] = useState<string | null>(null);
 
   // Merge live telemetry smoothly without overwriting user positions, manual port assignments, or user-added nodes
   useEffect(() => {
-    if (!cableDevices || cableDevices.length === 0) return;
+    const hasAnyData =
+      cableDevices.length > 0 ||
+      unknownDevices.length > 0 ||
+      formattedWifiClients.length > 0 ||
+      (state?.lanPorts?.length ?? 0) > 0;
+    if (!hasAnyData) return;
+
     setNodes((currentNodes) => {
-      const freshNodes = buildInitialNodes(cableDevices, formattedWifiClients, offlineCable, state?.canvas);
+      const freshNodes = buildAutoTopologyNodes(topologyInput);
       const freshMap = new Map(freshNodes.map((fn) => [fn.id, fn]));
       const savedParents = loadDeviceParents();
 
-      // 1. Update existing nodes with live telemetry while preserving all user positions, port assignments, and edits
-      const updatedExisting = currentNodes.map((cur) => {
-        const fresh = freshMap.get(cur.id);
-        if (!fresh) {
-          // This node was either added by user from palette or customized, keep it intact!
-          return cur;
-        }
-        // Check if user has an explicit saved parent for this device
-        const upperMac = (cur.mac || "").toUpperCase();
-        const savedParentEntry = savedParents[upperMac] || savedParents[cur.id];
-        const resolvedParentId = savedParentEntry
-          ? savedParentEntry.parentId
-          : cur.parentId !== undefined && cur.parentId !== "switch-salon"
-          ? cur.parentId
-          : fresh.parentId ?? cur.parentId;
+      const updatedExisting = currentNodes
+        .map((cur) => {
+          const fresh = freshMap.get(cur.id);
+          if (!fresh) {
+            if (cur.id.startsWith("switch-1") || cur.id.startsWith("dev-1")) {
+              return cur;
+            }
+            return null;
+          }
+          const upperMac = (cur.mac || "").toUpperCase();
+          const savedParentEntry = savedParents[upperMac] || savedParents[cur.id];
+          const resolvedParentId = savedParentEntry
+            ? savedParentEntry.parentId
+            : fresh.parentId ?? cur.parentId;
 
-        // Device exists in live telemetry: update live status, KEEP user positions & port assignments
-        freshMap.delete(cur.id);
-        return {
-          ...cur,
-          name: fresh.name || cur.name,
-          ip: fresh.ip ?? cur.ip,
-          mac: fresh.mac ?? cur.mac,
-          cableQuality: fresh.cableQuality ?? cur.cableQuality,
-          blocked: fresh.blocked ?? cur.blocked,
-          vendor: fresh.vendor ?? cur.vendor,
-          parentId: resolvedParentId,
-          portIndex: cur.portIndex !== undefined ? cur.portIndex : fresh.portIndex,
-        };
-      });
+          freshMap.delete(cur.id);
+          return {
+            ...cur,
+            name: fresh.name || cur.name,
+            ip: fresh.ip ?? cur.ip,
+            mac: fresh.mac ?? cur.mac,
+            cableQuality: fresh.cableQuality ?? cur.cableQuality,
+            blocked: fresh.blocked ?? cur.blocked,
+            vendor: fresh.vendor ?? cur.vendor,
+            online: fresh.online ?? cur.online,
+            ports: cur.ports || fresh.ports,
+            parentId: resolvedParentId,
+            portIndex: cur.portIndex !== undefined ? cur.portIndex : fresh.portIndex,
+          };
+        })
+        .filter(Boolean) as MapNode[];
 
-      // 2. Append any newly detected devices from the router that weren't in state
       const brandNew = Array.from(freshMap.values());
-
       return [...updatedExisting, ...brandNew];
     });
-  }, [cableDevices, wifiClients, offlineCable]);
+  }, [topologyInput, cableDevices.length, unknownDevices.length, formattedWifiClients.length, state?.lanPorts]);
 
   // Load persisted layout if available
   useEffect(() => {
@@ -241,9 +280,31 @@ export function MapEditor({
 
   const handleAutoLayout = () => {
     clearAutoLayoutOverrides();
-    const freshNodes = buildInitialNodes(cableDevices, formattedWifiClients, offlineCable);
+    const freshNodes = buildAutoTopologyNodes({ ...topologyInput, serverCanvas: null });
     pushHistory(freshNodes);
     showToast("تمت إعادة الترتيب التلقائي للشبكة والأجهزة الحية ✨");
+  };
+
+  const handleRebuildFromRouter = async () => {
+    clearAllMapOverrides();
+    try {
+      await fetch("/api/topology", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-password":
+            (typeof window !== "undefined" ? localStorage.getItem("fiber_admin_pw") : null) || "",
+        },
+        body: JSON.stringify({ reset: true }),
+      });
+    } catch {}
+    const freshNodes = buildAutoTopologyNodes({
+      ...topologyInput,
+      serverCanvas: null,
+      serverTopology: null,
+    });
+    pushHistory(freshNodes);
+    showToast("✨ تم إعادة رسم الخريطة أوتوماتيكياً من بيانات الروتر الحية");
   };
 
   const handleSaveLayout = async () => {
@@ -632,7 +693,11 @@ export function MapEditor({
   ) => {
     console.log(`[ADD_ITEM] Dropped ${item.name} (${item.type}) at (${x}, ${y}) targetHub=${targetHub}`);
     if (item.type === "switch") {
-      const hubId = targetHub ? `hub-${targetHub.toLowerCase()}` : "hub-lan4";
+      const firstHub = nodes.find((n) => n.type === "hub" && n.id !== "hub-offline");
+      const hubId = targetHub
+        ? `hub-${targetHub.toLowerCase()}`
+        : firstHub?.id || "node-router";
+      const hubName = targetHub || firstHub?.uplinkHub || "LAN1";
       const newSwNode: MapNode = {
         id: `switch-${Date.now()}`,
         name: item.name,
@@ -641,8 +706,8 @@ export function MapEditor({
         y,
         parentId: hubId,
         ports: item.ports || 8,
-        uplinkHub: (targetHub as any) || "LAN4",
-        uplinkColor: targetHub === "LAN4" ? "#14121F" : "#5B3DF5",
+        uplinkHub: hubName,
+        uplinkColor: hubName === "LAN4" ? "#14121F" : hubName === "LAN2" ? "#FF7A45" : "#5B3DF5",
         selected: true,
       };
       savePositionsBatch([{ id: newSwNode.id, x, y }]);
@@ -652,7 +717,7 @@ export function MapEditor({
       setSelectedType("switch");
       showToast(`✓ تم إضافة ${item.name} وتوصيله بـ ${newSwNode.uplinkHub}`);
     } else {
-      const targetParent = selectedSwitchId || "switch-salon";
+      const targetParent = selectedSwitchId || switches[0]?.id || "node-router";
       const newDevNode: MapNode = {
         id: `dev-${Date.now()}`,
         name: item.name,
@@ -768,7 +833,7 @@ export function MapEditor({
                 مراقبة الشبكة
               </h1>
               <p className="text-[12px] font-[600] text-[#6B6880] ltr-num">
-                ZTE F680 · 192.168.1.1
+                {routerDisplayName} · {routerIp}
               </p>
             </div>
           </div>
@@ -790,7 +855,7 @@ export function MapEditor({
             >
               <span>أجهزة الكابل</span>
               <span className="bg-[#D7F25C] text-[#14121F] text-[10px] font-[900] px-2 py-0.2 rounded-full ltr-num">
-                23
+                {cableDevices.length}
               </span>
             </Link>
             <Link
@@ -799,7 +864,7 @@ export function MapEditor({
             >
               <span>الويفي</span>
               <span className="bg-[#F6F6FA] text-[#6B6880] text-[10px] font-[800] px-1.5 py-0.2 rounded-full ltr-num">
-                5
+                {wifiClients.length}
               </span>
             </Link>
             <Link
@@ -898,7 +963,17 @@ export function MapEditor({
             </span>
           </div>
 
-          {/* Embedded Save button */}
+          {/* Embedded Rebuild & Save buttons */}
+          <button
+            type="button"
+            onClick={handleRebuildFromRouter}
+            className="h-[42px] px-4 rounded-[999px] bg-[#EFEBFF] hover:bg-[#E1DAFF] text-[#5B3DF5] text-[12.5px] font-[800] transition-all flex items-center gap-1.5 cursor-pointer flex-shrink-0"
+            title="مسح التعديلات اليدوية وإعادة رسم الخريطة تلقائياً من الروتر"
+          >
+            <span>✨</span>
+            <span>رسم تلقائي من الروتر</span>
+          </button>
+
           {isEmbedded && (
             <button
               type="button"
