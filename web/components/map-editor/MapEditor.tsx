@@ -320,6 +320,8 @@ export function MapEditor({
         },
         body: JSON.stringify({
           canvas: {
+            schemaVersion: "v2-auto",
+            routerSignature: `${routerDisplayName}|${routerIp}`,
             switches: switches.map((s) => ({
               id: s.id,
               name: s.name,

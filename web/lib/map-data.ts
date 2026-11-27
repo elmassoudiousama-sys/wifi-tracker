@@ -49,6 +49,8 @@ export interface AutoTopologyInput {
   correlationInsights?: CorrelationInsight[];
   hasActiveWifi?: boolean;
   serverCanvas?: {
+    schemaVersion?: string;
+    routerSignature?: string;
     positions?: Record<string, { x: number; y: number }>;
     switches?: any[];
     edges?: any[];
@@ -486,11 +488,16 @@ export function buildAutoTopologyNodes(input: AutoTopologyInput): MapNode[] {
     ...wifiAll.map((w) => (w.mac || "").toUpperCase()),
   ].filter(Boolean);
 
-  ensureRouterScope(`${routerName}|${routerIp}`, activeMacs);
+  const routerSig = `${routerName}|${routerIp}`;
+  ensureRouterScope(routerSig, activeMacs);
 
   const localSaved = loadSavedPositions();
+  const validServerCanvas =
+    input.serverCanvas &&
+    input.serverCanvas.schemaVersion === SCHEMA_VERSION &&
+    input.serverCanvas.routerSignature === routerSig;
   const saved: Record<string, { x: number; y: number }> = {
-    ...(input.serverCanvas?.positions || {}),
+    ...(validServerCanvas ? input.serverCanvas?.positions || {} : {}),
     ...localSaved,
   };
   const portAssignments = loadPortAssignments();
@@ -984,9 +991,9 @@ export function buildAutoTopologyNodes(input: AutoTopologyInput): MapNode[] {
   // =========================================================================
   const CENTER_X = 620;
   const HUB_OFFSET_X = 215;
-  const BRANCH_GAP_Y = 54;
-  const COL_GAP = 72;
-  const ROW_GAP = 78;
+  const BRANCH_GAP_Y = 58;
+  const COL_GAP = 78;
+  const ROW_GAP = 82;
 
   const finalHubs = finalNodes.filter((n) => n.type === "hub");
   const lanHubNodes = finalHubs.filter((h) => h.id !== "hub-wifi" && h.id !== "hub-offline");
@@ -1092,8 +1099,8 @@ export function buildAutoTopologyNodes(input: AutoTopologyInput): MapNode[] {
           const row = Math.floor(idx / maxPerRow);
           const col = idx % maxPerRow;
           const colsInRow = Math.min(maxPerRow, wDevs.length - row * maxPerRow);
-          const rowStartX = apX - ((colsInRow - 1) * 60) / 2;
-          applySavedPos(w, rowStartX + col * 60, apY + 72 + row * 70);
+          const rowStartX = apX - ((colsInRow - 1) * 72) / 2;
+          applySavedPos(w, rowStartX + col * 72, apY + 74 + row * 76);
         });
       } else {
         const branchSwitches = getSwitchesInBranch(hub.id);

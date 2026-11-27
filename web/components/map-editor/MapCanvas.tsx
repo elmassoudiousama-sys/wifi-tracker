@@ -1261,22 +1261,22 @@ export function MapCanvas({
               )}
 
               <g
-                transform={`translate(${swX + swWidth / 2 - 66}, ${swY - 44})`}
+                transform={`translate(${swX + swWidth / 2 - 74}, ${swY - 44})`}
                 className="cursor-pointer"
                 onClick={() => onSelectSwitch(sw)}
               >
                 <rect
-                  width="132"
+                  width="148"
                   height="30"
                   rx="9"
                   fill="#FFFFFF"
                   stroke="#EEF0F5"
                   strokeWidth="1.8"
                 />
-                <text x="66" y="14" textAnchor="middle" fill="#14121F" fontSize="10.5" fontWeight="900">
-                  {sw.name.length > 18 ? sw.name.slice(0, 18) + "…" : sw.name}
+                <text x="74" y="14" textAnchor="middle" fill="#14121F" fontSize="10.5" fontWeight="900">
+                  {sw.name.length > 22 ? sw.name.slice(0, 22) + "…" : sw.name}
                 </text>
-                <text x="66" y="24" textAnchor="middle" fill="#6B6880" fontSize="8.5" fontWeight="700">
+                <text x="74" y="24" textAnchor="middle" fill="#6B6880" fontSize="8.5" fontWeight="700">
                   {sw.ports} منافذ · {sw.uplinkHub}
                 </text>
               </g>

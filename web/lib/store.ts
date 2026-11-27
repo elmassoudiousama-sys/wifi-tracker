@@ -212,6 +212,8 @@ export interface CanvasEdge {
 }
 
 export interface CanvasLayout {
+  schemaVersion?: string;
+  routerSignature?: string;
   positions: Record<string, { x: number; y: number }>;
   switches: CanvasSwitch[];
   edges: CanvasEdge[];

@@ -19,6 +19,8 @@ export async function POST(req: NextRequest) {
 
   if (body.canvas) {
     state.canvas = {
+      ...(body.canvas.schemaVersion ? { schemaVersion: String(body.canvas.schemaVersion) } : {}),
+      ...(body.canvas.routerSignature ? { routerSignature: String(body.canvas.routerSignature) } : {}),
       positions: body.canvas.positions || {},
       switches: body.canvas.switches || [],
       edges: body.canvas.edges || [],
