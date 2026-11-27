@@ -109,6 +109,7 @@ export function useDashboardState() {
     }
     if (res.ok) {
       setAuthError("");
+      setAuthed(true);
       setState(await res.json());
     }
   }, []);
@@ -140,9 +141,11 @@ export function useDashboardState() {
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
-    localStorage.setItem("fiber_admin_pw", password);
-    setAuthed(true);
-    await fetchStatus(password);
+    const cleanPw = password.trim();
+    if (!cleanPw) return;
+    localStorage.setItem("fiber_admin_pw", cleanPw);
+    setPassword(cleanPw);
+    await fetchStatus(cleanPw);
   }
 
   function handleLogout() {

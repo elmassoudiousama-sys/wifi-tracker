@@ -8,6 +8,7 @@ interface DevicesCardProps {
   total: number;
   percent: number;
   dots: DeviceDot[];
+  unknownCount?: number;
 }
 
 export function DevicesCard({
@@ -15,6 +16,7 @@ export function DevicesCard({
   total,
   percent,
   dots,
+  unknownCount = 0,
 }: DevicesCardProps) {
   return (
     <div className="bento-card bg-[#D7F25C] text-[#14121F] flex flex-col justify-between flex-1">
@@ -92,7 +94,7 @@ export function DevicesCard({
           </div>
           <div className="flex items-center gap-1.5">
             <span className="w-2.5 h-2.5 rounded-full bg-white border border-[#14121F]/30" />
-            <span>جديد (10)</span>
+            <span>جديد ({unknownCount})</span>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="w-2.5 h-2.5 rounded-full bg-[#65771A]" />

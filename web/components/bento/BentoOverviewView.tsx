@@ -225,6 +225,7 @@ export function BentoOverviewView() {
               total={totalCable}
               percent={percentCable}
               dots={dots}
+              unknownCount={unknownDevices.length}
             />
           </div>
           <div

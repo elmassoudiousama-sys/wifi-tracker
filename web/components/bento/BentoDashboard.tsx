@@ -13,9 +13,14 @@ import { DeviceDrawer } from "@/components/dashboard/modals/DeviceDrawer";
 import { DeviceModal } from "@/components/dashboard/modals/DeviceModal";
 import { RebootModal } from "@/components/dashboard/modals/RebootModal";
 import { ProxyModal } from "@/components/dashboard/modals/ProxyModal";
+import { LoginView } from "@/components/dashboard/auth/LoginView";
 
 export default function BentoDashboard() {
-  const { view, toast } = useDashboard();
+  const { authed, view, toast } = useDashboard();
+
+  if (!authed) {
+    return <LoginView />;
+  }
 
   return (
     <div className="min-h-screen bg-[#ECEBF3] text-[#14121F] p-[28px_20px] sm:p-[28px_40px] flex flex-col gap-[22px] max-w-[1440px] mx-auto">
