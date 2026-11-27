@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isAuthorizedAdmin, readState, writeState } from "@/lib/store";
+import { authorizeAdmin, readState, writeState } from "@/lib/store";
 
 export async function DELETE(req: NextRequest) {
-  if (!isAuthorizedAdmin(req)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const auth = await authorizeAdmin(req);
+  if (!auth.ok) {
+    return NextResponse.json(auth.body, { status: auth.status });
   }
   const state = await readState();
   state.alerts = [];

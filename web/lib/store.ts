@@ -388,15 +388,32 @@ const DEFAULT_STATE: MonitorState = {
 };
 
 const REDIS_KEY = "fiber_monitor_state_v1";
-const LOCAL_FILE = process.env.VERCEL
-  ? path.join("/tmp", ".data", "state.json")
-  : path.join(process.cwd(), ".data", "state.json");
+const LOCKOUT_KEY = "fiber_monitor_auth_lockouts_v1";
+const LOCAL_DIR = process.env.VERCEL ? path.join("/tmp", ".data") : path.join(process.cwd(), ".data");
+const LOCAL_FILE = path.join(LOCAL_DIR, "state.json");
+const LOCKOUT_FILE = path.join(LOCAL_DIR, "auth-lockouts.json");
+
+export const MAX_AUTH_ATTEMPTS = 3;
+export const AUTH_LOCKOUT_MS = 24 * 60 * 60 * 1000;
+
+interface AuthLockoutEntry {
+  count: number;
+  lockedUntil?: number;
+  lastFailAt?: number;
+}
 
 export function isAuthorizedAdmin(req: Request): boolean {
   const pass =
     process.env.ADMIN_PASSWORD ||
     (process.env.NODE_ENV !== "production" ? "dev-admin" : "");
   return Boolean(pass && req.headers.get("x-admin-password") === pass);
+}
+
+function getClientKey(req: Request): string {
+  const xff = req.headers.get("x-forwarded-for") || "";
+  const firstIp = xff.split(",")[0]?.trim();
+  const realIp = req.headers.get("x-real-ip")?.trim();
+  return firstIp || realIp || "default";
 }
 
 function getDatabaseUrl(): string {
@@ -425,54 +442,54 @@ function hasUpstash(): boolean {
   return Boolean(process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN);
 }
 
-export async function readState(): Promise<MonitorState> {
+async function readKeyJson<T>(key: string, localPath: string, fallback: T): Promise<T> {
   if (getDatabaseUrl()) {
     try {
       const sql = await getNeonSql();
-      const rows = (await sql`SELECT payload FROM monitor_state WHERE id = ${REDIS_KEY} LIMIT 1`) as Array<{
+      const rows = (await sql`SELECT payload FROM monitor_state WHERE id = ${key} LIMIT 1`) as Array<{
         payload?: string;
       }>;
       const raw = rows?.[0]?.payload;
-      if (!raw) return { ...DEFAULT_STATE };
-      return { ...DEFAULT_STATE, ...JSON.parse(raw) };
+      if (!raw) return fallback;
+      return JSON.parse(raw) as T;
     } catch (err) {
-      console.error("[Neon readState error]", err);
-      return { ...DEFAULT_STATE };
+      console.error(`[Neon read ${key} error]`, err);
+      return fallback;
     }
   }
 
   if (hasUpstash()) {
-    const url = `${process.env.UPSTASH_REDIS_REST_URL}/get/${REDIS_KEY}`;
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}` },
-      cache: "no-store",
-    });
-    if (!res.ok) return { ...DEFAULT_STATE };
-    const data = await res.json();
-    if (!data.result) return { ...DEFAULT_STATE };
     try {
-      return { ...DEFAULT_STATE, ...JSON.parse(data.result) };
+      const url = `${process.env.UPSTASH_REDIS_REST_URL}/get/${key}`;
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}` },
+        cache: "no-store",
+      });
+      if (!res.ok) return fallback;
+      const data = await res.json();
+      if (!data.result) return fallback;
+      return JSON.parse(data.result) as T;
     } catch {
-      return { ...DEFAULT_STATE };
+      return fallback;
     }
   }
 
   try {
-    if (!fs.existsSync(LOCAL_FILE)) return { ...DEFAULT_STATE };
-    const raw = fs.readFileSync(LOCAL_FILE, "utf-8");
-    return { ...DEFAULT_STATE, ...JSON.parse(raw) };
+    if (!fs.existsSync(localPath)) return fallback;
+    const raw = fs.readFileSync(localPath, "utf-8");
+    return JSON.parse(raw) as T;
   } catch {
-    return { ...DEFAULT_STATE };
+    return fallback;
   }
 }
 
-export async function writeState(state: MonitorState): Promise<void> {
-  const serialized = JSON.stringify(state);
+async function writeKeyJson(key: string, localPath: string, value: unknown): Promise<void> {
+  const serialized = JSON.stringify(value);
   if (getDatabaseUrl()) {
     const sql = await getNeonSql();
     await sql`
       INSERT INTO monitor_state (id, payload, updated_at)
-      VALUES (${REDIS_KEY}, ${serialized}, NOW())
+      VALUES (${key}, ${serialized}, NOW())
       ON CONFLICT (id)
       DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()
     `;
@@ -480,7 +497,7 @@ export async function writeState(state: MonitorState): Promise<void> {
   }
 
   if (hasUpstash()) {
-    const url = `${process.env.UPSTASH_REDIS_REST_URL}/set/${REDIS_KEY}`;
+    const url = `${process.env.UPSTASH_REDIS_REST_URL}/set/${key}`;
     await fetch(url, {
       method: "POST",
       headers: {
@@ -493,8 +510,95 @@ export async function writeState(state: MonitorState): Promise<void> {
     return;
   }
 
-  fs.mkdirSync(path.dirname(LOCAL_FILE), { recursive: true });
-  fs.writeFileSync(LOCAL_FILE, serialized, "utf-8");
+  fs.mkdirSync(path.dirname(localPath), { recursive: true });
+  fs.writeFileSync(localPath, serialized, "utf-8");
+}
+
+export async function authorizeAdmin(req: Request): Promise<
+  | { ok: true }
+  | {
+      ok: false;
+      status: 401 | 429;
+      body: {
+        error: string;
+        locked: boolean;
+        attemptsLeft: number;
+        maxAttempts: number;
+        lockedUntil?: string;
+        retryAfterSeconds?: number;
+      };
+    }
+> {
+  const clientKey = getClientKey(req);
+  const now = Date.now();
+  const lockouts = await readKeyJson<Record<string, AuthLockoutEntry>>(LOCKOUT_KEY, LOCKOUT_FILE, {});
+  const rec = lockouts[clientKey];
+
+  if (rec?.lockedUntil && rec.lockedUntil > now) {
+    return {
+      ok: false,
+      status: 429,
+      body: {
+        error: "Locked",
+        locked: true,
+        attemptsLeft: 0,
+        maxAttempts: MAX_AUTH_ATTEMPTS,
+        lockedUntil: new Date(rec.lockedUntil).toISOString(),
+        retryAfterSeconds: Math.max(1, Math.ceil((rec.lockedUntil - now) / 1000)),
+      },
+    };
+  }
+
+  if (isAuthorizedAdmin(req)) {
+    if (rec) {
+      delete lockouts[clientKey];
+      await writeKeyJson(LOCKOUT_KEY, LOCKOUT_FILE, lockouts);
+    }
+    return { ok: true };
+  }
+
+  const prevCount = rec && (!rec.lockedUntil || rec.lockedUntil <= now) ? rec.count || 0 : 0;
+  const nextCount = prevCount + 1;
+
+  if (nextCount >= MAX_AUTH_ATTEMPTS) {
+    const lockedUntil = now + AUTH_LOCKOUT_MS;
+    lockouts[clientKey] = { count: nextCount, lockedUntil, lastFailAt: now };
+    await writeKeyJson(LOCKOUT_KEY, LOCKOUT_FILE, lockouts);
+    return {
+      ok: false,
+      status: 429,
+      body: {
+        error: "Locked",
+        locked: true,
+        attemptsLeft: 0,
+        maxAttempts: MAX_AUTH_ATTEMPTS,
+        lockedUntil: new Date(lockedUntil).toISOString(),
+        retryAfterSeconds: Math.ceil(AUTH_LOCKOUT_MS / 1000),
+      },
+    };
+  }
+
+  lockouts[clientKey] = { count: nextCount, lastFailAt: now };
+  await writeKeyJson(LOCKOUT_KEY, LOCKOUT_FILE, lockouts);
+  return {
+    ok: false,
+    status: 401,
+    body: {
+      error: "Unauthorized",
+      locked: false,
+      attemptsLeft: MAX_AUTH_ATTEMPTS - nextCount,
+      maxAttempts: MAX_AUTH_ATTEMPTS,
+    },
+  };
+}
+
+export async function readState(): Promise<MonitorState> {
+  const data = await readKeyJson<Partial<MonitorState>>(REDIS_KEY, LOCAL_FILE, {});
+  return { ...DEFAULT_STATE, ...data };
+}
+
+export async function writeState(state: MonitorState): Promise<void> {
+  await writeKeyJson(REDIS_KEY, LOCAL_FILE, state);
 }
 
 export function mergeDevicesWithMeta(

@@ -9,6 +9,8 @@ export function useDashboardState() {
   const [password, setPassword] = useState("");
   const [authed, setAuthed] = useState(false);
   const [authError, setAuthError] = useState("");
+  const [attemptsLeft, setAttemptsLeft] = useState<number | null>(null);
+  const [lockedUntil, setLockedUntil] = useState<number | null>(null);
   const [state, setState] = useState<MonitorState | null>(null);
   const [theme, setTheme] = useState<"light" | "dark" | null>(null);
   const [view, setView] = useState<View>("overview");
@@ -58,8 +60,18 @@ export function useDashboardState() {
   }, []);
 
   useEffect(() => {
+    const rawLock = localStorage.getItem("fiber_auth_locked_until");
+    const parsedLock = rawLock ? Number(rawLock) : 0;
+    if (parsedLock && parsedLock > Date.now()) {
+      setLockedUntil(parsedLock);
+      setAttemptsLeft(0);
+      setAuthError("تم تجاوز 3 محاولات خاطئة. يرجى الانتظار 24 ساعة قبل إعادة المحاولة.");
+    } else if (rawLock) {
+      localStorage.removeItem("fiber_auth_locked_until");
+    }
+
     const savedPw = localStorage.getItem("fiber_admin_pw") || "";
-    if (savedPw) {
+    if (savedPw && !(parsedLock && parsedLock > Date.now())) {
       setPassword(savedPw);
       setAuthed(true);
       fetchStatus(savedPw);
@@ -101,14 +113,43 @@ export function useDashboardState() {
       headers: { "x-admin-password": pw },
       cache: "no-store",
     });
-    if (res.status === 401) {
+    if (res.status === 429) {
+      let body: { lockedUntil?: string; retryAfterSeconds?: number } = {};
+      try {
+        body = await res.json();
+      } catch {}
+      const untilMs = body.lockedUntil
+        ? new Date(body.lockedUntil).getTime()
+        : Date.now() + (body.retryAfterSeconds || 86400) * 1000;
       setAuthed(false);
+      setAttemptsLeft(0);
+      setLockedUntil(untilMs);
+      localStorage.setItem("fiber_auth_locked_until", String(untilMs));
       localStorage.removeItem("fiber_admin_pw");
-      setAuthError("كلمة السر غير صحيحة");
+      setAuthError("تم قفل الدخول لمدة 24 ساعة بعد 3 محاولات خاطئة.");
+      return;
+    }
+    if (res.status === 401) {
+      let body: { attemptsLeft?: number } = {};
+      try {
+        body = await res.json();
+      } catch {}
+      const left = typeof body.attemptsLeft === "number" ? body.attemptsLeft : null;
+      setAuthed(false);
+      setAttemptsLeft(left);
+      localStorage.removeItem("fiber_admin_pw");
+      setAuthError(
+        left !== null
+          ? `كلمة السر غير صحيحة — متبقي ليك ${left} ${left === 1 ? "محاولة" : "محاولات"} قبل القفل لمدة 24 ساعة.`
+          : "كلمة السر غير صحيحة"
+      );
       return;
     }
     if (res.ok) {
       setAuthError("");
+      setAttemptsLeft(null);
+      setLockedUntil(null);
+      localStorage.removeItem("fiber_auth_locked_until");
       setAuthed(true);
       setState(await res.json());
     }
@@ -612,6 +653,9 @@ export function useDashboardState() {
     setAuthed,
     authError,
     setAuthError,
+    attemptsLeft,
+    lockedUntil,
+    setLockedUntil,
     state,
     setState,
     theme,
