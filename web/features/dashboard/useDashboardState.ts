@@ -70,12 +70,42 @@ export function useDashboardState() {
       localStorage.removeItem("fiber_auth_locked_until");
     }
 
-    const savedPw = localStorage.getItem("fiber_admin_pw") || "";
-    if (savedPw && !(parsedLock && parsedLock > Date.now())) {
-      setPassword(savedPw);
-      setAuthed(true);
-      fetchStatus(savedPw);
-    }
+    // Reconcile lock state with server (does NOT count as a failed attempt)
+    fetch("/api/auth/check", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((info) => {
+        if (!info) return;
+        if (info.locked && info.lockedUntil) {
+          const until = new Date(info.lockedUntil).getTime();
+          setLockedUntil(until);
+          setAttemptsLeft(0);
+          localStorage.setItem("fiber_auth_locked_until", String(until));
+          setAuthError("تم تجاوز 3 محاولات خاطئة. يرجى الانتظار 24 ساعة قبل إعادة المحاولة.");
+        } else {
+          setLockedUntil(null);
+          localStorage.removeItem("fiber_auth_locked_until");
+          if (typeof info.attemptsLeft === "number" && info.attemptsLeft < 3) {
+            setAttemptsLeft(info.attemptsLeft);
+          } else {
+            setAttemptsLeft(null);
+            setAuthError("");
+          }
+          const savedPw = localStorage.getItem("fiber_admin_pw") || "";
+          if (savedPw) {
+            setPassword(savedPw);
+            setAuthed(true);
+            fetchStatus(savedPw);
+          }
+        }
+      })
+      .catch(() => {
+        const savedPw = localStorage.getItem("fiber_admin_pw") || "";
+        if (savedPw && !(parsedLock && parsedLock > Date.now())) {
+          setPassword(savedPw);
+          setAuthed(true);
+          fetchStatus(savedPw);
+        }
+      });
     const savedTheme = localStorage.getItem("fiber_theme");
     if (savedTheme === "light" || savedTheme === "dark") {
       setTheme(savedTheme);

@@ -514,6 +514,32 @@ async function writeKeyJson(key: string, localPath: string, value: unknown): Pro
   fs.writeFileSync(localPath, serialized, "utf-8");
 }
 
+export async function getAuthLockStatus(req: Request): Promise<{
+  locked: boolean;
+  attemptsLeft: number;
+  maxAttempts: number;
+  lockedUntil?: string;
+}> {
+  const clientKey = getClientKey(req);
+  const now = Date.now();
+  const lockouts = await readKeyJson<Record<string, AuthLockoutEntry>>(LOCKOUT_KEY, LOCKOUT_FILE, {});
+  const rec = lockouts[clientKey];
+  if (rec?.lockedUntil && rec.lockedUntil > now) {
+    return {
+      locked: true,
+      attemptsLeft: 0,
+      maxAttempts: MAX_AUTH_ATTEMPTS,
+      lockedUntil: new Date(rec.lockedUntil).toISOString(),
+    };
+  }
+  const used = rec && (!rec.lockedUntil || rec.lockedUntil <= now) ? rec.count || 0 : 0;
+  return {
+    locked: false,
+    attemptsLeft: Math.max(0, MAX_AUTH_ATTEMPTS - used),
+    maxAttempts: MAX_AUTH_ATTEMPTS,
+  };
+}
+
 export async function authorizeAdmin(req: Request): Promise<
   | { ok: true }
   | {
