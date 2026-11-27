@@ -68,12 +68,31 @@ export function savePortAssignment(mac: string, portIndex?: number) {
   try {
     const current = loadPortAssignments();
     const upper = mac.toUpperCase();
-    if (portIndex === undefined || portIndex === null || portIndex <= 0) {
+    if (portIndex === undefined || portIndex === null || portIndex < 0) {
       delete current[upper];
     } else {
+      // 0 = explicitly disconnected by user; >= 1 = assigned port index
       current[upper] = portIndex;
     }
     localStorage.setItem("network-map-port-assignments", JSON.stringify(current));
+  } catch {}
+}
+
+export function clearAutoLayoutOverrides() {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.removeItem("network-map-positions");
+    const ports = loadPortAssignments();
+    let changed = false;
+    Object.keys(ports).forEach((k) => {
+      if (ports[k] === 0) {
+        delete ports[k];
+        changed = true;
+      }
+    });
+    if (changed) {
+      localStorage.setItem("network-map-port-assignments", JSON.stringify(ports));
+    }
   } catch {}
 }
 
@@ -441,9 +460,14 @@ export function buildSwitchesFromDevices(devices: any[]): MapSwitch[] {
 export function buildInitialNodes(
   cableDevices: any[] = [],
   wifiClients: any[] = [],
-  offlineCable: any[] = []
+  offlineCable: any[] = [],
+  serverCanvas?: { positions?: Record<string, { x: number; y: number }> }
 ): MapNode[] {
-  const saved = loadSavedPositions();
+  const localSaved = loadSavedPositions();
+  const saved: Record<string, { x: number; y: number }> = {
+    ...(serverCanvas?.positions || {}),
+    ...localSaved,
+  };
 
   const getNodePos = (id: string, defaultX: number, defaultY: number) => {
     if (saved[id] && typeof saved[id].x === "number" && typeof saved[id].y === "number") {
@@ -452,18 +476,18 @@ export function buildInitialNodes(
     return { x: defaultX, y: defaultY };
   };
 
-  const wanPos = getNodePos("node-wan", 550, 40);
-  const routerPos = getNodePos("node-router", 550, 270);
-  const lan1Pos = getNodePos("hub-lan1", 335, 130);
-  const lan2Pos = getNodePos("hub-lan2", 335, 425);
-  const wifiPos = getNodePos("hub-wifi", 790, 95);
-  const lan3Pos = getNodePos("hub-lan3", 805, 285);
-  const lan4Pos = getNodePos("hub-lan4", 805, 455);
-  const sw1Pos = getNodePos("switch-salon", 180, 130);
-  const sw2Pos = getNodePos("switch-bureau", 180, 415);
+  const wanPos = getNodePos("node-wan", 550, 32);
+  const routerPos = getNodePos("node-router", 550, 265);
+  const lan1Pos = getNodePos("hub-lan1", 355, 105);
+  const lan2Pos = getNodePos("hub-lan2", 355, 435);
+  const wifiPos = getNodePos("hub-wifi", 785, 70);
+  const lan3Pos = getNodePos("hub-lan3", 785, 355);
+  const lan4Pos = getNodePos("hub-lan4", 785, 505);
+  const sw1Pos = getNodePos("switch-salon", 190, 105);
+  const sw2Pos = getNodePos("switch-bureau", 190, 435);
 
-  const sw1SubPos = getNodePos("switch-lan1-sub", sw1Pos.x - 240, sw1Pos.y);
-  const sw1CascadePos = getNodePos("switch-lan1-cascade", sw1Pos.x - 240, sw1Pos.y + 220);
+  const sw1SubPos = getNodePos("switch-lan1-sub", sw1Pos.x - 275, sw1Pos.y);
+  const sw1CascadePos = getNodePos("switch-lan1-cascade", sw1SubPos.x, sw1SubPos.y + 195);
 
   const nodes: MapNode[] = [
     {
@@ -542,7 +566,7 @@ export function buildInitialNodes(
       ports: 8,
       uplinkHub: "LAN1",
       uplinkColor: "#5B3DF5",
-      selected: true,
+      selected: false,
     },
     {
       id: "switch-lan1-sub",
@@ -563,7 +587,7 @@ export function buildInitialNodes(
       x: sw1CascadePos.x,
       y: sw1CascadePos.y,
       parentId: "switch-lan1-sub",
-      portIndex: 5,
+      portIndex: 2,
       ports: 5,
       uplinkHub: "LAN1",
       uplinkColor: "#8B6CFF",
@@ -594,18 +618,19 @@ export function buildInitialNodes(
     ? "dev-" + l9ahiraRouter.mac.replace(/:/g, "").toLowerCase()
     : "dev-l9ahira-1";
 
-  // LAN1 Online Devices
+  // LAN1 Online Devices (smart distribution + auto port tracing)
   const lan1 = (cableDevices || []).filter((d) => d.port === "LAN1" && d.online);
+  let salonCount = 0;
   lan1.forEach((d, i) => {
     const upperMac = (d.mac || "").toUpperCase();
     const devId = "dev-" + (d.mac ? d.mac.replace(/:/g, "").toLowerCase() : `lan1-${i}`);
     const assignedPort = portAssignments[upperMac];
-    const isAssigned = typeof assignedPort === "number" && assignedPort > 0;
+    const hasExplicitPort = typeof assignedPort === "number";
 
     // Hierarchy resolution: respect saved parent first, then smart grouping
     const savedParentEntry = savedParents[upperMac] || savedParents[devId];
     let parentId = "switch-salon";
-    let portIndex = isAssigned ? assignedPort : undefined;
+    let portIndex = hasExplicitPort ? assignedPort : undefined;
 
     if (savedParentEntry) {
       parentId = savedParentEntry.parentId;
@@ -613,19 +638,23 @@ export function buildInitialNodes(
         portIndex = savedParentEntry.portIndex;
       }
     } else {
-      // Smart Auto-Topology based on user's real network structure:
+      // Smart Auto-Topology based on user's network structure:
       if (d.name.includes("L9AHIRA") && d.category === "phone") {
-        // Phone attached to neighbor's router/AP
         parentId = l9ahiraRouterId;
-      } else if (d.name === "L9AHIRA RACHID 1" || d.name === "L9AHIRA RACHID 2" || d.name === "RETALI" || d.name === "smail") {
-        // Neighbor routers attached to the cascade switch
+      } else if (
+        d.name === "L9AHIRA RACHID 1" ||
+        d.name === "L9AHIRA RACHID 2" ||
+        d.name.toLowerCase().includes("l9ahira") ||
+        d.name === "RETALI" ||
+        d.name === "smail" ||
+        d.name === "3azkri"
+      ) {
         parentId = "switch-lan1-cascade";
-      } else if (i >= 4) {
-        // Second switch in LAN1
-        parentId = "switch-lan1-sub";
-      } else {
-        // Main saloon switch
+      } else if (salonCount < 4) {
         parentId = "switch-salon";
+        salonCount += 1;
+      } else {
+        parentId = "switch-lan1-sub";
       }
     }
 
@@ -671,12 +700,12 @@ export function buildInitialNodes(
   lan2.forEach((d, i) => {
     const upperMac = (d.mac || "").toUpperCase();
     const assignedPort = portAssignments[upperMac];
-    const isAssigned = typeof assignedPort === "number" && assignedPort > 0;
+    const hasExplicitPort = typeof assignedPort === "number";
     const devId = "dev-" + (d.mac ? d.mac.replace(/:/g, "").toLowerCase() : `lan2-${i}`);
 
     const savedParentEntry = savedParents[upperMac] || savedParents[devId];
     let parentId = "switch-bureau";
-    let portIndex = isAssigned ? assignedPort : undefined;
+    let portIndex = hasExplicitPort ? assignedPort : undefined;
 
     if (savedParentEntry) {
       parentId = savedParentEntry.parentId;
@@ -713,7 +742,7 @@ export function buildInitialNodes(
   const lan3Dev = (cableDevices || []).find((d) => d.port === "LAN3" && d.online);
   if (lan3Dev) {
     const devId = "dev-lan3";
-    const pos = getNodePos(devId, 945, 285);
+    const pos = getNodePos(devId, lan3Pos.x + 165, lan3Pos.y);
     nodes.push({
       id: devId,
       name: lan3Dev.name,
@@ -732,7 +761,7 @@ export function buildInitialNodes(
   const lan4Dev = (cableDevices || []).find((d) => d.port === "LAN4" && d.online);
   if (lan4Dev) {
     const devId = "dev-lan4";
-    const pos = getNodePos(devId, 945, 455);
+    const pos = getNodePos(devId, lan4Pos.x + 165, lan4Pos.y);
     nodes.push({
       id: devId,
       name: lan4Dev.name,
@@ -747,12 +776,14 @@ export function buildInitialNodes(
     });
   }
 
-  // Real Wi-Fi Connected Clients as draggable nodes
+  // Real Wi-Fi Connected Clients as draggable nodes (cleanly centered above LAN3)
+  const wifiApX = wifiPos.x + 115;
   (wifiClients || []).forEach((c, i) => {
-    const row = i < 5 ? 0 : 1;
-    const col = i < 5 ? i : i - 5;
-    const defaultX = 825 + col * 44;
-    const defaultY = row === 0 ? 175 : 232;
+    const row = Math.floor(i / 5);
+    const col = i % 5;
+    const colsInRow = Math.min(5, (wifiClients || []).length - row * 5);
+    const defaultX = Math.round(wifiApX - ((colsInRow - 1) * 56) / 2 + col * 56);
+    const defaultY = wifiPos.y + 72 + row * 68;
     const devId = "dev-wifi-" + (c.mac ? c.mac.replace(/:/g, "").toLowerCase() : i);
     const pos = getNodePos(devId, defaultX, defaultY);
     const safeName = c.name || c.friendlyName || (c.hostname && c.hostname !== "Wi-Fi Device" ? c.hostname : (c.vendor || c.ip || (c.mac ? `هاتف ${c.mac.slice(-5)}` : `هاتف ${i + 1}`)));
@@ -810,21 +841,60 @@ export function buildInitialNodes(
   const deletedSet = new Set(loadDeletedNodeIds());
   const finalNodes = deletedSet.size > 0 ? nodes.filter((n) => !deletedSet.has(n.id)) : nodes;
 
-  // Apply saved Switch metadata overrides (ports, name, uplink) & auto-size ports to fit devices
+  // Apply saved Switch metadata overrides (ports, name, uplink) & auto-assign free ports to unassigned devices
   const switchMeta = loadSwitchMeta();
-  finalNodes.forEach((n) => {
-    if (n.type !== "switch") return;
-    const override = switchMeta[n.id];
+  finalNodes.forEach((sw) => {
+    if (sw.type !== "switch") return;
+    const override = switchMeta[sw.id];
     if (override) {
-      if (override.name) n.name = override.name;
-      if (override.ports) n.ports = override.ports;
-      if (override.uplinkHub) n.uplinkHub = override.uplinkHub;
-      if (override.uplinkColor) n.uplinkColor = override.uplinkColor;
+      if (override.name) sw.name = override.name;
+      if (override.ports) sw.ports = override.ports;
+      if (override.uplinkHub) sw.uplinkHub = override.uplinkHub;
+      if (override.uplinkColor) sw.uplinkColor = override.uplinkColor;
     }
-    // Ensure switch has enough ports if many devices are attached (port 1 is uplink)
-    const childCount = finalNodes.filter((c) => c.parentId === n.id).length;
-    if (!override?.ports && childCount > 7) {
-      n.ports = childCount > 15 ? 24 : 16;
+
+    const childSwitches = finalNodes.filter((c) => c.type === "switch" && c.parentId === sw.id);
+    const childDevices = finalNodes.filter((c) => c.type === "device" && c.parentId === sw.id);
+
+    // Port 1 is reserved as Uplink LED on every switch
+    const usedPorts = new Set<number>([1]);
+    childSwitches.forEach((cs) => {
+      if (typeof cs.portIndex === "number" && cs.portIndex >= 2) {
+        usedPorts.add(cs.portIndex);
+      }
+    });
+    childDevices.forEach((cd) => {
+      if (typeof cd.portIndex === "number" && cd.portIndex >= 2) {
+        usedPorts.add(cd.portIndex);
+      }
+    });
+
+    const nextFreePort = () => {
+      let p = 2;
+      while (usedPorts.has(p) && p <= 24) p += 1;
+      usedPorts.add(p);
+      return p;
+    };
+
+    // Auto-trace any child switch or device that has no explicit port (and wasn't manually disconnected via portIndex === 0)
+    childSwitches.forEach((cs) => {
+      if (cs.portIndex === undefined) {
+        cs.portIndex = nextFreePort();
+      }
+    });
+    childDevices.forEach((cd) => {
+      if (cd.portIndex === undefined) {
+        cd.portIndex = nextFreePort();
+      } else if (cd.portIndex === 0) {
+        // Explicit manual disconnect -> render as unassigned
+        cd.portIndex = undefined;
+      }
+    });
+
+    const highestPort = usedPorts.size > 0 ? Math.max(...Array.from(usedPorts)) : 1;
+    const neededPorts = Math.max(highestPort, 1 + childSwitches.length + childDevices.length);
+    if (!override?.ports) {
+      sw.ports = neededPorts <= 5 ? 5 : neededPorts <= 8 ? 8 : neededPorts <= 16 ? 16 : 24;
     }
   });
 

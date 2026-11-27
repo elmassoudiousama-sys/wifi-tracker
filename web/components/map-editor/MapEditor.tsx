@@ -11,6 +11,7 @@ import {
   PaletteItem,
   buildInitialNodes,
   buildCablesFromNodes,
+  clearAutoLayoutOverrides,
   nodesToSwitches,
   savePositionsBatch,
   loadSavedPositions,
@@ -135,7 +136,7 @@ export function MapEditor({
 
   // 2. UNIFIED NODE & CABLE DATA MODEL (Single Source of Truth)
   const [nodes, setNodes] = useState<MapNode[]>(() => {
-    return buildInitialNodes(cableDevices, formattedWifiClients, offlineCable);
+    return buildInitialNodes(cableDevices, formattedWifiClients, offlineCable, state?.canvas);
   });
   const [history, setHistory] = useState<MapNode[][]>([]);
 
@@ -154,7 +155,7 @@ export function MapEditor({
   useEffect(() => {
     if (!cableDevices || cableDevices.length === 0) return;
     setNodes((currentNodes) => {
-      const freshNodes = buildInitialNodes(cableDevices, formattedWifiClients, offlineCable);
+      const freshNodes = buildInitialNodes(cableDevices, formattedWifiClients, offlineCable, state?.canvas);
       const freshMap = new Map(freshNodes.map((fn) => [fn.id, fn]));
       const savedParents = loadDeviceParents();
 
@@ -239,9 +240,7 @@ export function MapEditor({
   };
 
   const handleAutoLayout = () => {
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("network-map-positions");
-    }
+    clearAutoLayoutOverrides();
     const freshNodes = buildInitialNodes(cableDevices, formattedWifiClients, offlineCable);
     pushHistory(freshNodes);
     showToast("تمت إعادة الترتيب التلقائي للشبكة والأجهزة الحية ✨");
@@ -493,7 +492,7 @@ export function MapEditor({
     setNodes((prev) => {
       const target = prev.find((n) => n.id === nodeId);
       if (target?.mac) {
-        savePortAssignment(target.mac, undefined);
+        savePortAssignment(target.mac, 0);
       }
       return prev.map((n) =>
         n.id === nodeId

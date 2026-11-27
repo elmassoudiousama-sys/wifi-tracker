@@ -3,7 +3,11 @@
 import React, { useState, useMemo } from "react";
 import { useDashboard } from "@/features/dashboard/DashboardContext";
 import { MapCanvas, MapTelemetry } from "@/components/map-editor/MapCanvas";
-import { buildInitialNodes, nodesToSwitches } from "@/lib/map-data";
+import {
+  buildInitialNodes,
+  clearAutoLayoutOverrides,
+  nodesToSwitches,
+} from "@/lib/map-data";
 
 interface BentoMapViewProps {
   onSwitchToEdit?: () => void;
@@ -19,8 +23,9 @@ export function BentoMapView({ onSwitchToEdit }: BentoMapViewProps) {
     setInspectItem,
   } = useDashboard();
 
-  const [zoom, setZoom] = useState<number>(0.9);
+  const [zoom, setZoom] = useState<number>(0.95);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
+  const [layoutTick, setLayoutTick] = useState<number>(0);
 
   // 1. Live Telemetry from ZTE F680 & Agent
   const internetPing = state?.diagnostics?.internetPing ?? null;
@@ -114,11 +119,18 @@ export function BentoMapView({ onSwitchToEdit }: BentoMapViewProps) {
     ]
   );
 
-  // Build nodes directly from saved user edits + live telemetry
+  // Build nodes directly from saved user edits + live telemetry + automatic cable routing
   const nodes = useMemo(
-    () => buildInitialNodes(cableDevices, formattedWifiClients, offlineCable),
-    [cableDevices, formattedWifiClients, offlineCable]
+    () => buildInitialNodes(cableDevices, formattedWifiClients, offlineCable, state?.canvas),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [cableDevices, formattedWifiClients, offlineCable, state?.canvas, layoutTick]
   );
+
+  const handleAutoArrange = () => {
+    clearAutoLayoutOverrides();
+    setLayoutTick((t) => t + 1);
+    setZoom(0.95);
+  };
 
   const switches = useMemo(() => nodesToSwitches(nodes), [nodes]);
 
@@ -189,6 +201,16 @@ export function BentoMapView({ onSwitchToEdit }: BentoMapViewProps) {
                 +
               </button>
             </div>
+
+            <button
+              type="button"
+              onClick={handleAutoArrange}
+              className="px-3 py-1.5 rounded-[999px] bg-[#F0EFF8] hover:bg-[#E4E1F6] text-[#5B3DF5] text-[12px] font-[800] flex items-center gap-1.5 transition-all cursor-pointer"
+              title="إعادة الترتيب التلقائي وتوصيل المنافذ الذكي"
+            >
+              <span>🔄</span>
+              <span>ترتيب تلقائي</span>
+            </button>
 
             {onSwitchToEdit && (
               <button

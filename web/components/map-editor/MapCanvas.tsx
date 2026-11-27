@@ -520,10 +520,10 @@ export function MapCanvas({
   const lan2Count = switches.find((s) => s.uplinkHub === "LAN2")?.devices.length ?? 0;
 
   const effectiveZoom = zoom || 1;
-  const viewWidth = Math.round(1100 / effectiveZoom);
-  const viewHeight = Math.round(600 / effectiveZoom);
-  const viewX = Math.round(panOffset.x + 550 - viewWidth / 2);
-  const viewY = Math.round(panOffset.y + 300 - viewHeight / 2);
+  const viewWidth = Math.round(1260 / effectiveZoom);
+  const viewHeight = Math.round(700 / effectiveZoom);
+  const viewX = Math.round(panOffset.x + 515 - viewWidth / 2);
+  const viewY = Math.round(panOffset.y + 325 - viewHeight / 2);
 
   return (
     <div
