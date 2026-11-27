@@ -116,6 +116,7 @@ def _execute_commands(
     global _LAST_WAN_DIAG
     executed_any = False
     for cmd in commands:
+      try:
         action = cmd.get("action")
         mac = norm_mac(cmd.get("mac", ""))
         name = cmd.get("name", "Client")
@@ -145,12 +146,8 @@ def _execute_commands(
         elif action == "reboot_router":
             print("[CMD] Received Reboot Router request! Attempting remote restart...")
             try:
-                res_reb = client._post_signed(
-                    "sys_mgr_reboot_lua.lua",
-                    {"IF_ACTION": "Reboot"},
-                    view_tag="devMgr",
-                )
-                print(f"[CMD] Reboot command executed: {res_reb[:120]}")
+                res_reb = client.reboot_router()
+                print(f"[CMD] Reboot result: {'SUCC' if 'IF_ERRORSTR>SUCC' in res_reb else res_reb[:160]}")
             except Exception as e:
                 print(f"[CMD] Reboot post error: {e}")
             executed_any = True
@@ -209,10 +206,10 @@ def _execute_commands(
         elif action == "unban_identity":
             ban_id = cmd.get("instId", "")
             removed = _IDENTITY_ENGINE.unregister_ban(mac=mac, ban_id=ban_id)
-            if removed:
-                target_macs = {norm_mac(m) for m in (removed.get("bannedMacs") or []) if m}
-                if mac:
-                    target_macs.add(mac)
+            target_macs = {norm_mac(m) for m in ((removed or {}).get("bannedMacs") or []) if m}
+            if mac:
+                target_macs.add(mac)
+            if target_macs:
                 try:
                     for rule in client.get_mac_filters():
                         if norm_mac(rule.get("SrcMacAddr", "")) in target_macs and rule.get("_InstID"):
@@ -225,7 +222,7 @@ def _execute_commands(
                             client.unblock_wlan_mac(rule["_InstID"])
                 except Exception:
                     pass
-                print(f"[CMD] Removed persistent DNA ban {removed.get('name')} ({len(target_macs)} MACs)")
+                print(f"[CMD] Removed persistent DNA ban {(removed or {}).get('name', name)} ({len(target_macs)} MACs)")
                 executed_any = True
         elif action == "set_ssid_config":
             inst_id = cmd.get("instId", "")
@@ -247,6 +244,8 @@ def _execute_commands(
             res_xml = client.set_port_mirror(enable=en, mirror_src=m_src, mirror_dest=m_dest)
             print(f"[CMD] Port Mirror result: {'SUCC' if 'IF_ERRORSTR>SUCC' in res_xml else res_xml[:160]}")
             executed_any = True
+      except Exception as cmd_exc:
+        print(f"[CMD Error] {cmd.get('action')} ({cmd.get('mac')}): {cmd_exc}")
     return executed_any
 
 
@@ -1211,35 +1210,52 @@ def run_once(
         except Exception as exc:
             print(f"[Upstash] Sync failed: {exc}")
 
-    if api_url and "YOUR_VERCEL_APP" not in api_url and "YOUR_VERCEL" not in api_url:
+    sync_targets: List[str] = []
+    for raw_url in [api_url, *(cfg.get("extra_api_urls") or [])]:
+        u = str(raw_url or "").strip().rstrip("/")
+        if u and "YOUR_VERCEL" not in u and u not in sync_targets:
+            sync_targets.append(u)
+
+    all_commands: List[Dict[str, Any]] = []
+    synced_targets: List[str] = []
+    for target_url in sync_targets:
         try:
             res = requests.post(
-                f"{api_url}/api/sync",
+                f"{target_url}/api/sync",
                 json=payload,
                 headers={"Authorization": f"Bearer {api_secret}"},
                 timeout=15,
             )
             if res.ok:
+                synced_targets.append(target_url)
                 resp_json = res.json()
-                commands = resp_json.get("commands", [])
-                executed_any = _execute_commands(commands, client, blocked_by_mac)
-                if executed_any:
-                    _refresh_payload_after_commands(payload, client)
-                    requests.post(
-                        f"{api_url}/api/sync",
-                        json=payload,
-                        headers={"Authorization": f"Bearer {api_secret}"},
-                        timeout=15,
-                    )
+                cmds = resp_json.get("commands", [])
+                if cmds:
+                    all_commands.extend(cmds)
                 _apply_remote_meta(
                     known_devices,
                     resp_json.get("deviceMeta"),
                     resp_json.get("addedDevices"),
                 )
             else:
-                print(f"[API] Sync error {res.status_code}: {res.text[:200]}")
+                print(f"[API] Sync error ({target_url}) {res.status_code}: {res.text[:200]}")
         except Exception as exc:
-            print(f"[API] Sync failed: {exc}")
+            print(f"[API] Sync failed ({target_url}): {exc}")
+
+    if all_commands:
+        executed_any = _execute_commands(all_commands, client, blocked_by_mac)
+        if executed_any:
+            _refresh_payload_after_commands(payload, client)
+            for target_url in synced_targets:
+                try:
+                    requests.post(
+                        f"{target_url}/api/sync",
+                        json=payload,
+                        headers={"Authorization": f"Bearer {api_secret}"},
+                        timeout=15,
+                    )
+                except Exception as exc:
+                    print(f"[API] Post-command sync failed ({target_url}): {exc}")
 
     print(
         f"[{datetime.now().strftime('%H:%M:%S')}] "

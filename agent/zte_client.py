@@ -412,8 +412,36 @@ class ZTEF680Client:
                 results.append(item)
         return results
 
+    def ensure_wlan_acl_ban(self, interface: str = "DEV.WIFI.AP1") -> None:
+        """Ensure WLAN ACL policy for target interface is set to Ban (Blacklist)."""
+        try:
+            policies = self.get_wlan_acl_policy()
+            for p in policies:
+                if p.get("_InstID") == interface and p.get("ACLPolicy") != "Ban":
+                    self._post_signed(
+                        "wlan_macfilteraclpolicy_lua.lua",
+                        {
+                            "IF_ACTION": "Apply",
+                            "_InstID": interface,
+                            "ACLPolicy": "Ban",
+                        },
+                        view_tag="wlanAdvanced",
+                    )
+                    break
+        except Exception:
+            pass
+
+    def reboot_router(self) -> str:
+        """Reboot ZTE F680 router using devmgr_restartmgr_lua.lua."""
+        return self._post_signed(
+            "devmgr_restartmgr_lua.lua",
+            {"IF_ACTION": "Restart"},
+            view_tag="rebootAndReset",
+        )
+
     def block_wlan_mac(self, name: str, mac: str, interface: str = "DEV.WIFI.AP1") -> str:
         """Add a MAC address to WLAN L2 ACL (Ban list), retrying with MAC suffix on duplicate name."""
+        self.ensure_wlan_acl_ban(interface)
         clean_mac = mac.lower().strip()
         suffix = clean_mac.replace(":", "")[-4:]
         base_name = re.sub(r"[^A-Za-z0-9_-]", "_", name)[:24] or "WifiBlocked"
